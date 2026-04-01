@@ -4,13 +4,15 @@ import {
   Scp,
   responses,
   constants,
+  Dataset,
 } from "dcmjs-dimse";
 import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
+import { handleCFind } from "./handlers/cfind";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 
-const { CEchoResponse, CStoreResponse } = responses;
+const { CEchoResponse, CStoreResponse, CFindResponse } = responses;
 const {
   Status,
   PresentationContextResult,
@@ -18,6 +20,8 @@ const {
   SopClass,
   StorageClass,
 } = constants;
+
+type CFindResponseInstance = InstanceType<typeof CFindResponse>;
 
 const SCP_PORT = parseInt(process.env.SCP_PORT ?? "104", 10);
 const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA";
@@ -54,8 +58,10 @@ class CadiaScp extends Scp {
 
       const isVerification = abstractSyntax === SopClass.Verification;
       const isStorage = Object.values(StorageClass).includes(abstractSyntax);
+      const isQueryRetrieve =
+        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind;
 
-      if (isVerification || isStorage) {
+      if (isVerification || isStorage || isQueryRetrieve) {
         let accepted = false;
         transferSyntaxes.forEach((ts: string) => {
           if (
@@ -121,6 +127,42 @@ class CadiaScp extends Scp {
     const response = CStoreResponse.fromRequest(request);
     response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
     callback(response);
+  }
+
+  async cFindRequest(
+    request: any,
+    callback: (responses: CFindResponseInstance[]) => void,
+  ): Promise<void> {
+    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
+    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
+    const dataset = request.getDataset();
+
+    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase();
+
+    const result = await handleCFind(
+      callingAeTitle,
+      calledAeTitle,
+      this.remoteAddress,
+      dataset,
+      queryLevel as "STUDY" | "SERIES" | "IMAGE",
+    );
+
+    const pendingResponses: CFindResponseInstance[] = [];
+
+    if (result.success && result.results?.length) {
+      for (const match of result.results) {
+        const response = CFindResponse.fromRequest(request);
+        response.setStatus(Status.Pending);
+        response.setDataset(new Dataset(match));
+        pendingResponses.push(response);
+      }
+    }
+
+    const final = CFindResponse.fromRequest(request);
+    final.setStatus(Status.Success);
+    pendingResponses.push(final);
+
+    callback(pendingResponses);
   }
 }
 
