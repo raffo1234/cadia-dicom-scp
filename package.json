@@ -1,15 +1,22 @@
 {
   "name": "cadia-dicom-scp",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Cadia DICOM SCP server — receives studies from hospital modalities",
+  "main": "dist/server.js",
   "repository": "https://github.com/raffo1234/cadia-dicom-scp.git",
-  "author": "<rhmcord@gmail.com>",
+  "author": "rhmcord@gmail.com",
   "license": "MIT",
+  "scripts": {
+    "dev": "ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1021.0",
     "@supabase/supabase-js": "^2.101.1",
     "dcmjs": "^0.50.1",
-    "dcmjs-dimse": "^0.3.2"
+    "dcmjs-dimse": "^0.3.2",
+    "dotenv": "^17.3.1"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
