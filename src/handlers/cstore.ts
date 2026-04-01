@@ -1,5 +1,3 @@
-// import { data as dcmjsData } from "dcmjs";
-
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const dcmjsData = require('dcmjs').data;
 import { Dataset } from "dcmjs-dimse";
@@ -8,38 +6,52 @@ import { uploadToR2 } from "../lib/r2";
 import { supabase } from "../lib/supabase";
 import { DicomInstanceInsert } from "../types";
 
-const { DicomMessage, DicomMetaDictionary } = dcmjsData;
-
 /**
- * Extracts a string tag value safely
+ * Naturalized dcmjs datasets return plain values (strings, numbers, arrays)
+ * not wrapped in { Value: [...] } objects. These helpers handle both formats.
  */
 const tag = (dataset: Record<string, any>, key: string): string | undefined => {
   const val = dataset[key];
-  if (!val) return undefined;
-  const v = Array.isArray(val.Value) ? val.Value[0] : val.Value;
-  return v !== undefined && v !== null ? String(v).trim() : undefined;
+  if (val === undefined || val === null) return undefined;
+  if (typeof val === "string") return val.trim() || undefined;
+  if (Array.isArray(val)) return val[0] !== undefined ? String(val[0]).trim() : undefined;
+  if (typeof val === "object" && val.Value) {
+    const v = Array.isArray(val.Value) ? val.Value[0] : val.Value;
+    return v !== undefined && v !== null ? String(v).trim() : undefined;
+  }
+  return String(val).trim() || undefined;
 };
 
 const tagFloat = (dataset: Record<string, any>, key: string): number | undefined => {
   const val = dataset[key];
-  if (!val) return undefined;
-  const v = Array.isArray(val.Value) ? val.Value[0] : val.Value;
+  if (val === undefined || val === null) return undefined;
+  const v = Array.isArray(val)
+    ? val[0]
+    : val?.Value
+    ? Array.isArray(val.Value) ? val.Value[0] : val.Value
+    : val;
   const n = parseFloat(String(v));
   return isNaN(n) ? undefined : n;
 };
 
 const tagInt = (dataset: Record<string, any>, key: string): number | undefined => {
   const val = dataset[key];
-  if (!val) return undefined;
-  const v = Array.isArray(val.Value) ? val.Value[0] : val.Value;
+  if (val === undefined || val === null) return undefined;
+  const v = Array.isArray(val)
+    ? val[0]
+    : val?.Value
+    ? Array.isArray(val.Value) ? val.Value[0] : val.Value
+    : val;
   const n = parseInt(String(v), 10);
   return isNaN(n) ? undefined : n;
 };
 
 const tagFloatArray = (dataset: Record<string, any>, key: string): number[] | undefined => {
   const val = dataset[key];
-  if (!val || !Array.isArray(val.Value)) return undefined;
-  const nums = val.Value.map((v: unknown) => parseFloat(String(v)));
+  if (!val) return undefined;
+  const arr = Array.isArray(val) ? val : val?.Value ? val.Value : undefined;
+  if (!arr) return undefined;
+  const nums = arr.map((v: unknown) => parseFloat(String(v)));
   return nums.every((n: number) => !isNaN(n)) ? nums : undefined;
 };
 
@@ -66,9 +78,22 @@ export const handleCStore = async (
   // 2. Extract buffer and parse DICOM metadata
   try {
     const elements = rawDataset.getElements();
-    fileBuffer = dcmjsData.datasetToBuffer(elements);
-    const dicomData = DicomMessage.readFile(fileBuffer.buffer as ArrayBuffer);
-    dataset = DicomMetaDictionary.naturalizeDataset(dicomData.dict);
+    const transferSyntaxUid = rawDataset.getTransferSyntaxUid();
+
+    // Replicate toFile() internals to get buffer without writing to disk
+    const denaturalizedMeta = dcmjsData.DicomMetaDictionary.denaturalizeDataset({
+      FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
+      MediaStorageSOPClassUID: elements.SOPClassUID ?? "1.2.840.10008.5.1.4.1.1.7",
+      MediaStorageSOPInstanceUID: elements.SOPInstanceUID ?? "",
+      TransferSyntaxUID: transferSyntaxUid,
+    });
+
+    const dicomDict = new dcmjsData.DicomDict(denaturalizedMeta);
+    dicomDict.dict = dcmjsData.DicomMetaDictionary.denaturalizeDataset(elements);
+    fileBuffer = Buffer.from(dicomDict.write());
+
+    const dicomData = dcmjsData.DicomMessage.readFile(fileBuffer.buffer as ArrayBuffer);
+    dataset = dcmjsData.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
   } catch (err) {
     console.error(`[C-STORE] Failed to parse DICOM from ${callingAeTitle}:`, err);
     return { success: false, reason: "Failed to parse DICOM file" };
