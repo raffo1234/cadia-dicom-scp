@@ -10,9 +10,10 @@ import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
 import { handleCFind } from "./handlers/cfind";
+import { handleCMove } from "./handlers/cmove";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 
-const { CEchoResponse, CStoreResponse, CFindResponse } = responses;
+const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
 const {
   Status,
   PresentationContextResult,
@@ -22,6 +23,7 @@ const {
 } = constants;
 
 type CFindResponseInstance = InstanceType<typeof CFindResponse>;
+type CMoveResponseInstance = InstanceType<typeof CMoveResponse>;
 
 const SCP_PORT = parseInt(process.env.SCP_PORT ?? "104", 10);
 const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA";
@@ -59,7 +61,8 @@ class CadiaScp extends Scp {
       const isVerification = abstractSyntax === SopClass.Verification;
       const isStorage = Object.values(StorageClass).includes(abstractSyntax);
       const isQueryRetrieve =
-        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind;
+        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind ||
+        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelMove;
 
       if (isVerification || isStorage || isQueryRetrieve) {
         let accepted = false;
@@ -160,6 +163,51 @@ class CadiaScp extends Scp {
 
     const final = CFindResponse.fromRequest(request);
     final.setStatus(Status.Success);
+    pendingResponses.push(final);
+
+    callback(pendingResponses);
+  }
+
+  async cMoveRequest(
+    request: any,
+    callback: (responses: CMoveResponseInstance[]) => void,
+  ): Promise<void> {
+    
+    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
+    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
+    const dataset = request.getDataset()?.getElements() ?? {};
+    const moveDestination = (request.getCommandDataset?.()?.getElement?.("MoveDestination") ?? "").trim();
+    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase() as
+      | "STUDY"
+      | "SERIES"
+      | "IMAGE";
+
+    
+
+    const pendingResponses: CMoveResponseInstance[] = [];
+
+    const result = await handleCMove(
+      callingAeTitle,
+      calledAeTitle,
+      this.remoteAddress,
+      moveDestination,
+      dataset,
+      queryLevel,
+      (completed, remaining, failed) => {
+        const pending = CMoveResponse.fromRequest(request);
+        pending.setStatus(Status.Pending);
+        pending.setCompleted(completed);
+        pending.setRemaining(remaining);
+        pending.setFailures(failed);
+        pendingResponses.push(pending);
+      },
+    );
+
+    const final = CMoveResponse.fromRequest(request);
+    final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+    final.setCompleted(result.completed);
+    final.setRemaining(0);
+    final.setFailures(result.failed);
     pendingResponses.push(final);
 
     callback(pendingResponses);

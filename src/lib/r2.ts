@@ -1,4 +1,5 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { Readable } from "stream";
 
 const endpoint = process.env.CLOUDFLARE_R2_ENDPOINT;
 const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID;
@@ -36,4 +37,28 @@ export const uploadToR2 = async (
   // Return the public URL — same pattern as your existing storage
   const storageDomain = process.env.STORAGE_DOMAIN?.replace(/\/$/, "") ?? "";
   return `${storageDomain}/${key}`;
+};
+
+export const downloadFromR2 = async (
+  bucket: string,
+  key: string,
+): Promise<Buffer> => {
+  const result = await r2.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }),
+  );
+ 
+  if (!result.Body) {
+    throw new Error(`Empty body from R2 for key: ${key}`);
+  }
+ 
+  // Convert readable stream to Buffer
+  const stream = result.Body as Readable;
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 };
