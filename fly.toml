@@ -1,0 +1,20 @@
+app = "cadia-dicom-scp"
+primary_region = "gru"
+
+[build]
+
+[env]
+  SCP_PORT = "11112"
+  SCP_AE_TITLE = "CADIA"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 11112
+
+  [[services.ports]]
+    port = 104
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
