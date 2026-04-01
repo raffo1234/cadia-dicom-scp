@@ -8,6 +8,7 @@ import {
 import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
+import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 
 const { CEchoResponse, CStoreResponse } = responses;
 const {
@@ -24,6 +25,9 @@ const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA";
 class CadiaScp extends Scp {
   private remoteAddress: string = "";
   private association: any = undefined;
+  // Track study UIDs and hospital received during this association
+  private receivedStudyUIDs: Set<string> = new Set();
+  private hospitalId: string = "";
 
   constructor(socket: any, opts: any) {
     super(socket, opts);
@@ -32,6 +36,8 @@ class CadiaScp extends Scp {
 
   associationRequested(association: any): void {
     this.association = association;
+    this.receivedStudyUIDs = new Set();
+    this.hospitalId = "";
 
     const callingAeTitle = association.getCallingAeTitle().trim();
     const calledAeTitle = association.getCalledAeTitle().trim();
@@ -46,7 +52,6 @@ class CadiaScp extends Scp {
       const abstractSyntax = context.getAbstractSyntaxUid();
       const transferSyntaxes = context.getTransferSyntaxUids();
 
-      // Accept Verification (C-ECHO) and all storage classes
       const isVerification = abstractSyntax === SopClass.Verification;
       const isStorage = Object.values(StorageClass).includes(abstractSyntax);
 
@@ -72,8 +77,16 @@ class CadiaScp extends Scp {
     this.sendAssociationAccept();
   }
 
-  associationReleaseRequested(): void {
+  // Modality finished sending — mark all received studies as complete
+  async associationReleaseRequested(): Promise<void> {
     this.sendAssociationReleaseResponse();
+
+    if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
+      await completeStudiesForAssociation(
+        Array.from(this.receivedStudyUIDs),
+        this.hospitalId,
+      );
+    }
   }
 
   async cEchoRequest(request: any, callback: (response: any) => void): Promise<void> {
@@ -99,6 +112,12 @@ class CadiaScp extends Scp {
       dataset,
     );
 
+    // Track study UIDs received in this association for completion on release
+    if (result.success && result.studyInstanceUID && result.hospitalId) {
+      this.receivedStudyUIDs.add(result.studyInstanceUID);
+      this.hospitalId = result.hospitalId;
+    }
+
     const response = CStoreResponse.fromRequest(request);
     response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
     callback(response);
@@ -109,6 +128,7 @@ const start = async (): Promise<void> => {
   console.log("[SCP] Starting Cadia DICOM SCP...");
 
   await hospitalRegistry.init();
+  startCompletionWatchdog();
 
   const server = new Server(CadiaScp);
   server.on("networkError", (e: any) => {
