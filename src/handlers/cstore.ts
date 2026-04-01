@@ -14,9 +14,19 @@ const tag = (dataset: Record<string, any>, key: string): string | undefined => {
   const val = dataset[key];
   if (val === undefined || val === null) return undefined;
   if (typeof val === "string") return val.trim() || undefined;
-  if (Array.isArray(val)) return val[0] !== undefined ? String(val[0]).trim() : undefined;
+  if (typeof val === "number") return String(val);
+  // DICOM Person Name — { Alphabetic: "DOE^JOHN" }
+  if (typeof val === "object" && val.Alphabetic !== undefined) {
+    return String(val.Alphabetic).trim() || undefined;
+  }
+  if (Array.isArray(val)) {
+    const first = val[0];
+    if (first?.Alphabetic !== undefined) return String(first.Alphabetic).trim() || undefined;
+    return first !== undefined ? String(first).trim() : undefined;
+  }
   if (typeof val === "object" && val.Value) {
     const v = Array.isArray(val.Value) ? val.Value[0] : val.Value;
+    if (v?.Alphabetic !== undefined) return String(v.Alphabetic).trim() || undefined;
     return v !== undefined && v !== null ? String(v).trim() : undefined;
   }
   return String(val).trim() || undefined;
