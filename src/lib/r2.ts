@@ -4,6 +4,7 @@ import { Readable } from "stream";
 const endpoint = process.env.CLOUDFLARE_R2_ENDPOINT;
 const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY;
+const R2_BUCKET = process.env.CLOUDFLARE_R2_BUCKET ?? "dicoms";
 
 if (!endpoint || !accessKeyId || !secretAccessKey) {
   throw new Error(
@@ -21,32 +22,33 @@ export const r2 = new S3Client({
 });
 
 export const uploadToR2 = async (
-  bucket: string,
-  key: string,
+  folder: string,  // hospital folder e.g. "cadia-grau"
+  key: string,     // dicom/<study>/<series>/<sop>.dcm
   body: Buffer,
 ): Promise<string> => {
+  const fullKey = `${folder}/${key}`;
+
   await r2.send(
     new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
+      Bucket: R2_BUCKET,
+      Key: fullKey,
       Body: body,
       ContentType: "application/dicom",
     }),
   );
 
-  // Return the public URL — same pattern as your existing storage
-  const storageDomain = process.env.STORAGE_DOMAIN?.replace(/\/$/, "") ?? "";
-  return `${storageDomain}/${key}`;
+  return fullKey; // e.g. "cadia-grau/dicom/<study>/<series>/<sop>.dcm"
 };
 
 export const downloadFromR2 = async (
-  bucket: string,
+  folder: string,
   key: string,
 ): Promise<Buffer> => {
+  const bucket = process.env.CLOUDFLARE_R2_BUCKET ?? "dicoms";
   const result = await r2.send(
     new GetObjectCommand({
       Bucket: bucket,
-      Key: key,
+      Key: `${folder}/${key}`,
     }),
   );
  
@@ -62,3 +64,4 @@ export const downloadFromR2 = async (
   }
   return Buffer.concat(chunks);
 };
+
