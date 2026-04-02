@@ -12,6 +12,7 @@ import { handleCStore } from "./handlers/cstore";
 import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
+import { startHttpServer } from "./http";
 
 const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
 const {
@@ -219,7 +220,8 @@ const start = async (): Promise<void> => {
 
   await hospitalRegistry.init();
   startCompletionWatchdog();
-
+  startHttpServer();
+  
   const server = new Server(CadiaScp);
   server.on("networkError", (e: any) => {
     console.error("[SCP] Network error:", e);
