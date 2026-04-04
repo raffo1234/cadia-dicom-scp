@@ -1,19 +1,14 @@
-# fly.toml app configuration file generated for cadia-dicom-scp on 2026-04-01T16:19:50-05:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
 app = 'cadia-dicom-scp'
 primary_region = 'gru'
 
 [build]
 
 [env]
-  SCP_AE_TITLE = 'CADIA'
+  SCP_AE_TITLE = 'CADIA-GRAU'
   SCP_PORT = '11112'
 
 [http_service]
-  internal_port = 11112
+  internal_port = 3001
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
@@ -26,6 +21,9 @@ primary_region = 'gru'
 
   [[services.ports]]
     port = 104
+
+  [[services.ports]]
+    port = 11112
 
   [services.concurrency]
     type = 'connections'
