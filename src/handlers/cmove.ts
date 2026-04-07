@@ -25,11 +25,16 @@ export const handleCMove = async (
   callingAeTitle: string,
   calledAeTitle: string,
   remoteAddress: string,
-  moveDestination: string,
   query: Record<string, any>,
   queryLevel: "STUDY" | "SERIES" | "IMAGE",
   onPending: (completed: number, remaining: number, failed: number) => void,
 ): Promise<{ success: boolean; completed: number; failed: number; reason?: string }> => {
+  const moveDestination = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+
+  if (!moveDestination) {
+    return { success: false, completed: 0, failed: 0, reason: "SCP_AE_TITLE not configured" };
+  }
+
   // 1. Validate called AE title
   const hospital = await hospitalRegistry.findByAeTitle(calledAeTitle);
   if (!hospital) {
@@ -42,7 +47,6 @@ export const handleCMove = async (
     .from("ae_route")
     .select("host, port, ae_title")
     .eq("hospital_id", hospital.hospital_id)
-    .eq("ae_title", moveDestination)
     .eq("is_active", true)
     .maybeSingle();
 

@@ -1,9 +1,9 @@
 import * as http from "http";
-import { Client, requests, responses, constants, Dataset } from "dcmjs-dimse";
+import { Client, requests, responses, constants } from "dcmjs-dimse";
 
-const { CFindRequest, CStoreRequest } = requests;
-const { CFindResponse, CStoreResponse } = responses;
-const { Status, TransferSyntax } = constants;
+const { CFindRequest } = requests;
+const { CFindResponse } = responses;
+const { Status } = constants;
 
 const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? "3001", 10);
 const SCP_AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
@@ -18,7 +18,6 @@ const executeCFind = (
 ): Promise<Record<string, any>[]> => {
   return new Promise((resolve, reject) => {
     const results: Record<string, any>[] = [];
-
     const client = new Client();
 
     const request = CFindRequest.createStudyFindRequest({
@@ -31,10 +30,9 @@ const executeCFind = (
     });
 
     request.on("response", (response: InstanceType<typeof CFindResponse>) => {
-      if (
-        response.getStatus() === Status.Pending &&
-        response.hasDataset()
-      ) {
+      const status = response.getStatus();
+
+      if (status === Status.Pending && response.hasDataset()) {
         const ds = response.getDataset();
         if (ds) {
           const elements = ds.getElements();
@@ -53,6 +51,10 @@ const executeCFind = (
           });
         }
       }
+
+      if (status === Status.Success) {
+        resolve(results);
+      }
     });
 
     client.on("networkError", (err: Error) => {
@@ -62,34 +64,26 @@ const executeCFind = (
     client.addRequest(request);
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
-    // Resolve after 30s max
-    const timeout = setTimeout(() => {
-      resolve(results);
-    }, 30_000);
-
-    request.on("response", (response: InstanceType<typeof CFindResponse>) => {
-      if (response.getStatus() === Status.Success) {
-        clearTimeout(timeout);
-        resolve(results);
-      }
-    });
+    // Safety timeout — resolve whatever we have
+    setTimeout(() => resolve(results), 30_000);
   });
 };
 
-// ─── C-MOVE SCU (pull) ────────────────────────────────────────────────────────
+// ─── C-MOVE SCU ───────────────────────────────────────────────────────────────
 
 const executeCMove = (
   host: string,
   port: number,
   calledAeTitle: string,
-  moveDestination: string,
   studyInstanceUID: string,
 ): Promise<{ completed: number; failed: number }> => {
   return new Promise((resolve, reject) => {
     const client = new Client();
 
+    // SCP_AE_TITLE is always the move destination — the SCP resolves the actual
+    // route internally via ae_route (mirrors cmove.ts behaviour)
     const request = requests.CMoveRequest.createStudyMoveRequest(
-      moveDestination,
+      SCP_AE_TITLE,
       studyInstanceUID,
     );
 
@@ -100,12 +94,11 @@ const executeCMove = (
       completed = response.getCompleted() ?? completed;
       failed = response.getFailures() ?? failed;
 
-      if (response.getStatus() === Status.Success) {
+      const status = response.getStatus();
+      if (status === Status.Success) {
         resolve({ completed, failed });
-      } else if (
-        response.getStatus() !== Status.Pending
-      ) {
-        reject(new Error(`C-MOVE failed with status: ${response.getStatus()}`));
+      } else if (status !== Status.Pending) {
+        reject(new Error(`C-MOVE failed with status: ${status}`));
       }
     });
 
@@ -116,9 +109,8 @@ const executeCMove = (
     client.addRequest(request);
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
-    setTimeout(() => {
-      resolve({ completed, failed });
-    }, 120_000);
+    // Safety timeout
+    setTimeout(() => resolve({ completed, failed }), 120_000);
   });
 };
 
@@ -158,9 +150,11 @@ const send = (res: http.ServerResponse, status: number, data: unknown) => {
 
 export const startHttpServer = (): void => {
   const server = http.createServer(async (req, res) => {
-    // CORS preflight
     if (req.method === "OPTIONS") {
-      res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" });
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+      });
       res.end();
       return;
     }
@@ -174,7 +168,7 @@ export const startHttpServer = (): void => {
     }
 
     // ── POST /find ────────────────────────────────────────────────────────────
-    // Body: { host, port, aeTitle, filters: { patientName, patientId, studyDate, modality } }
+    // Body: { host, port, aeTitle, filters?: { patientName, patientId, studyDate, modality, ... } }
     if (req.method === "POST" && url === "/find") {
       try {
         const body = await parseBody(req);
@@ -197,24 +191,24 @@ export const startHttpServer = (): void => {
     }
 
     // ── POST /move ────────────────────────────────────────────────────────────
-    // Body: { host, port, aeTitle, moveDestination, studyInstanceUID }
-    // moveDestination = the ae_title from the hospital_access table in Supabase
-    // Callers should resolve the AE title via hospital_access before calling this endpoint
+    // Body: { host, port, aeTitle, studyInstanceUID }
+    // The move destination is always SCP_AE_TITLE — route resolution happens
+    // inside the SCP's handleCMove via the ae_route table (see cmove.ts)
     if (req.method === "POST" && url === "/move") {
       try {
         const body = await parseBody(req);
-        const { host, port, aeTitle, studyInstanceUID, moveDestination } = body;
+        const { host, port, aeTitle, studyInstanceUID } = body;
 
-        if (!host || !port || !aeTitle || !studyInstanceUID || !moveDestination) {
-          send(res, 400, { error: "host, port, aeTitle, studyInstanceUID and moveDestination are required" });
+        if (!host || !port || !aeTitle || !studyInstanceUID) {
+          send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
           return;
         }
 
         console.log(
-          `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${moveDestination}`,
+          `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${SCP_AE_TITLE}`,
         );
 
-        const result = await executeCMove(host, port, aeTitle, moveDestination, studyInstanceUID);
+        const result = await executeCMove(host, port, aeTitle, studyInstanceUID);
         console.log(`[HTTP] C-MOVE done — completed: ${result.completed}, failed: ${result.failed}`);
         send(res, 200, result);
       } catch (err: any) {

@@ -27,7 +27,7 @@ type CFindResponseInstance = InstanceType<typeof CFindResponse>;
 type CMoveResponseInstance = InstanceType<typeof CMoveResponse>;
 
 const SCP_PORT = parseInt(process.env.SCP_PORT ?? "104", 10);
-const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA";
+const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
 
 class CadiaScp extends Scp {
   private remoteAddress: string = "";
@@ -191,7 +191,6 @@ class CadiaScp extends Scp {
       callingAeTitle,
       calledAeTitle,
       this.remoteAddress,
-      moveDestination,
       dataset,
       queryLevel,
       (completed, remaining, failed) => {
