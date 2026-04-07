@@ -1,8 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Client, requests, responses, constants, Dataset } from "dcmjs-dimse";
-import { hospitalRegistry } from "../lib/hospitalRegistry";
+import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { supabase } from "../lib/supabase";
 import { downloadFromR2 } from "../lib/r2";
 
@@ -17,9 +16,57 @@ interface DicomInstance {
   series_instance_uid: string;
 }
 
+interface ResolvedCaller {
+  hospital_id: string;
+  allowed_ip: string | null;
+  r2_bucket: string;
+}
+
+/**
+ * Resolves hospital_id from an AE title checking both tables:
+ * 1. hospital_access (scanners/modalidades que envían estudios)
+ * 2. ae_route (Orthanc u otros PACS destino que inician C-MOVE)
+ */
+const resolveCallerFromAeTitle = async (aeTitle: string): Promise<ResolvedCaller | null> => {
+  // Buscar en hospital_access primero
+  const { data: access } = await supabase
+    .from("hospital_access")
+    .select("hospital_id, allowed_ip, hospital:hospital_id(r2_bucket)")
+    .eq("ae_title", aeTitle)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (access) {
+    const hospital = Array.isArray(access.hospital) ? access.hospital[0] : access.hospital;
+    return {
+      hospital_id: access.hospital_id,
+      allowed_ip: access.allowed_ip,
+      r2_bucket: hospital.r2_bucket,
+    };
+  }
+
+  // Si no está, buscar en ae_route (ej: ORTHANC)
+  const { data: route } = await supabase
+    .from("ae_route")
+    .select("hospital_id, hospital:hospital_id(r2_bucket)")
+    .eq("ae_title", aeTitle)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (route) {
+    const hospital = Array.isArray(route.hospital) ? route.hospital[0] : route.hospital;
+    return {
+      hospital_id: route.hospital_id,
+      allowed_ip: null,
+      r2_bucket: hospital.r2_bucket,
+    };
+  }
+
+  return null;
+};
+
 /**
  * C-MOVE — retrieves studies/series/instances and sends them to a destination AE
- * The SCP acts as SCU to forward files via C-STORE to the destination
  */
 export const handleCMove = async (
   callingAeTitle: string,
@@ -35,23 +82,24 @@ export const handleCMove = async (
     return { success: false, completed: 0, failed: 0, reason: "SCP_AE_TITLE not configured" };
   }
 
-  // 1. Validate called AE title
-  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
-  if (!hospital) {
+  // 1. Validar caller — busca en hospital_access y ae_route
+  const caller = await resolveCallerFromAeTitle(callingAeTitle);
+  if (!caller) {
     console.warn(`[C-MOVE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "Unknown or inactive AE title" };
   }
 
-  if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
+  if (caller.allowed_ip && remoteAddress !== caller.allowed_ip) {
     console.warn(`[C-MOVE] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "IP not allowed" };
   }
 
-  // 2. Resolve move destination host/port from ae_route table
+  // 2. Resolver ruta destino filtrando por hospital_id Y ae_title
   const { data: route, error: routeError } = await supabase
     .from("ae_route")
     .select("host, port, ae_title")
-    .eq("hospital_id", hospital.hospital_id)
+    .eq("hospital_id", caller.hospital_id)
+    .eq("ae_title", moveDestination)
     .eq("is_active", true)
     .maybeSingle();
 
@@ -71,14 +119,14 @@ export const handleCMove = async (
 
   // 3. Audit log
   await supabase.from("dicom_audit_log").insert({
-    hospital_id: hospital.id,
+    hospital_id: caller.hospital_id,
     action: "c-move",
     ae_title: callingAeTitle,
     ip_address: remoteAddress,
   });
 
   // 4. Find instances to move
-  const instances = await resolveInstances(hospital.hospital_id, query, queryLevel);
+  const instances = await resolveInstances(caller.hospital_id, query, queryLevel);
   if (instances.length === 0) {
     console.log(`[C-MOVE] No instances found for query`);
     return { success: true, completed: 0, failed: 0 };
@@ -94,28 +142,18 @@ export const handleCMove = async (
   for (const inst of instances) {
     let tempPath: string | null = null;
     try {
-      // Download from R2
-      const buffer = await downloadFromR2(hospital.hospital.r2_bucket, storageUrlToKey(inst.storage_url));
+      const buffer = await downloadFromR2(
+        caller.r2_bucket,
+        storageUrlToKey(inst.storage_url),
+      );
 
-      // Write to temp file — CStoreRequest needs a file path
       tempPath = path.join(os.tmpdir(), `cadia-cmove-${inst.sop_instance_uid}.dcm`);
       fs.writeFileSync(tempPath, buffer);
       tempFiles.push(tempPath);
 
-      // Send via C-STORE to destination
-      const sent = await sendCStore(
-        tempPath,
-        route.host,
-        route.port,
-        calledAeTitle,
-        moveDestination,
-      );
+      const sent = await sendCStore(tempPath, route.host, route.port, calledAeTitle, moveDestination);
 
-      if (sent) {
-        completed++;
-      } else {
-        failed++;
-      }
+      if (sent) { completed++; } else { failed++; }
     } catch (err) {
       console.error(`[C-MOVE] Failed to forward ${inst.sop_instance_uid}:`, err);
       failed++;
@@ -132,6 +170,8 @@ export const handleCMove = async (
   console.log(`[C-MOVE] Done — completed: ${completed}, failed: ${failed}`);
   return { success: true, completed, failed };
 };
+
+// ... sendCStore y resolveInstances sin cambios
 
 /**
  * Sends a single DICOM file to a destination via C-STORE

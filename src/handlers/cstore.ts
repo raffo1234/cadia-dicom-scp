@@ -66,6 +66,21 @@ const tagFloatArray = (dataset: Record<string, any>, key: string): number[] | un
 };
 
 /**
+ * Checks if a calling AE title is a known C-MOVE destination (ae_route),
+ * meaning this C-STORE is a callback from a forwarding operation — not a
+ * modality sending a study. We trust it and skip the registry check.
+ */
+const isKnownRouteAeTitle = async (aeTitle: string): Promise<boolean> => {
+  const { data } = await supabase
+    .from("ae_route")
+    .select("id")
+    .eq("ae_title", aeTitle)
+    .eq("is_active", true)
+    .maybeSingle();
+  return !!data;
+};
+
+/**
  * C-STORE — receives a single DICOM instance from a modality
  * Called once per file during a study send
  */
@@ -77,7 +92,16 @@ export const handleCStore = async (
 ): Promise<{ success: boolean; reason?: string; studyInstanceUID?: string; hospitalId?: string }> => {
   // 1. Validate AE title
   const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
+
   if (!hospital) {
+    // Before rejecting, check if this is a known C-MOVE destination calling back.
+    // Destinations in ae_route are trusted — they connect back as part of forwarding.
+    const isRoute = await isKnownRouteAeTitle(callingAeTitle);
+    if (isRoute) {
+      console.log(`[C-STORE] Accepted C-MOVE callback from route AE: ${callingAeTitle}`);
+      return { success: true };
+    }
+
     console.warn(`[C-STORE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, reason: "Unknown or inactive AE title" };
   }
