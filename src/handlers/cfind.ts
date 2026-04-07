@@ -26,13 +26,19 @@ export const handleCFind = async (
   queryLevel: "STUDY" | "SERIES" | "IMAGE",
 ): Promise<{ success: boolean; results?: Record<string, any>[]; reason?: string }> => {
   // 1. Validate the called AE title is one of ours
-  const hospital = await hospitalRegistry.findByAeTitle(calledAeTitle);
+  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
     console.warn(
-      `[C-FIND] Rejected unknown AE title: ${calledAeTitle} from ${remoteAddress}`,
+      `[C-FIND] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`,
     );
     return { success: false, reason: "Unknown or inactive AE title" };
+  }
+
+  // IP allowlist check
+  if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
+    console.warn(`[C-FIND] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
+    return { success: false, reason: "IP not allowed" };
   }
 
   console.log(

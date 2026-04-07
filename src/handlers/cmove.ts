@@ -36,10 +36,15 @@ export const handleCMove = async (
   }
 
   // 1. Validate called AE title
-  const hospital = await hospitalRegistry.findByAeTitle(calledAeTitle);
+  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
   if (!hospital) {
-    console.warn(`[C-MOVE] Rejected unknown AE title: ${calledAeTitle}`);
+    console.warn(`[C-MOVE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "Unknown or inactive AE title" };
+  }
+
+  if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
+    console.warn(`[C-MOVE] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
+    return { success: false, completed: 0, failed: 0, reason: "IP not allowed" };
   }
 
   // 2. Resolve move destination host/port from ae_route table

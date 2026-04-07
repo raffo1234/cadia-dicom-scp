@@ -177,7 +177,6 @@ class CadiaScp extends Scp {
     const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
     const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
     const dataset = request.getDataset()?.getElements() ?? {};
-    const moveDestination = (request.getCommandDataset?.()?.getElement?.("MoveDestination") ?? "").trim();
     const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase() as
       | "STUDY"
       | "SERIES"

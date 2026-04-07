@@ -76,9 +76,9 @@ export const handleCStore = async (
   rawDataset: Dataset,
 ): Promise<{ success: boolean; reason?: string; studyInstanceUID?: string; hospitalId?: string }> => {
   // 1. Validate AE title
-  const hospital = await hospitalRegistry.findByAeTitle(calledAeTitle);
+  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
   if (!hospital) {
-    console.warn(`[C-STORE] Rejected unknown AE title: ${calledAeTitle}`);
+    console.warn(`[C-STORE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, reason: "Unknown or inactive AE title" };
   }
 

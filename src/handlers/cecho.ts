@@ -12,13 +12,19 @@ export const handleCEcho = async (
   remoteAddress: string,
 ): Promise<{ success: boolean; reason?: string }> => {
   // Validate the called AE title is one of ours
-  const hospital = await hospitalRegistry.findByAeTitle(calledAeTitle);
+  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
     console.warn(
-      `[C-ECHO] Rejected unknown AE title: ${calledAeTitle} from ${remoteAddress}`,
+      `[C-ECHO] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`,
     );
     return { success: false, reason: "Unknown or inactive AE title" };
+  }
+
+  // IP allowlist check (consistente con cstore)
+  if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
+    console.warn(`[C-ECHO] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
+    return { success: false, reason: "IP not allowed" };
   }
 
   console.log(
