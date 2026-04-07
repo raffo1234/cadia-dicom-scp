@@ -5,6 +5,7 @@ import { hospitalRegistry } from "../lib/hospitalRegistry";
 import { uploadToR2 } from "../lib/r2";
 import { supabase } from "../lib/supabase";
 import { DicomInstanceInsert } from "../types";
+import { resolveHospitalFromPendingMove } from "../lib/pendingMoves";
 
 /**
  * Naturalized dcmjs datasets return plain values (strings, numbers, arrays)
@@ -70,14 +71,15 @@ const tagFloatArray = (dataset: Record<string, any>, key: string): number[] | un
  * meaning this C-STORE is a callback from a forwarding operation — not a
  * modality sending a study. We trust it and skip the registry check.
  */
-const isKnownRouteAeTitle = async (aeTitle: string): Promise<boolean> => {
+const isKnownRouteAeTitle = async (aeTitle: string, hospitalId: string): Promise<boolean> => {
   const { data } = await supabase
     .from("ae_route")
     .select("id")
     .eq("ae_title", aeTitle)
+    .eq("hospital_id", hospitalId)
     .eq("is_active", true)
-    .maybeSingle();
-  return !!data;
+    .limit(1);
+  return !!data && data.length > 0;
 };
 
 /**
@@ -96,7 +98,14 @@ export const handleCStore = async (
   if (!hospital) {
     // Before rejecting, check if this is a known C-MOVE destination calling back.
     // Destinations in ae_route are trusted — they connect back as part of forwarding.
-    const isRoute = await isKnownRouteAeTitle(callingAeTitle);
+    const hospitalId = resolveHospitalFromPendingMove(callingAeTitle);
+    
+    const isRoute = hospitalId 
+    ? await isKnownRouteAeTitle(callingAeTitle, hospitalId)
+    : false;
+  
+    console.log(`[C-STORE] isKnownRouteAeTitle("${callingAeTitle}") = ${isRoute}`);
+
     if (isRoute) {
       console.log(`[C-STORE] Accepted C-MOVE callback from route AE: ${callingAeTitle}`);
       return { success: true };

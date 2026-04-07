@@ -4,6 +4,7 @@ import * as path from "path";
 import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { supabase } from "../lib/supabase";
 import { downloadFromR2 } from "../lib/r2";
+import { registerPendingMove, clearPendingMove } from "../lib/pendingMoves";
 
 const { CStoreRequest } = requests;
 const { CStoreResponse } = responses;
@@ -77,6 +78,7 @@ export const handleCMove = async (
   onPending: (completed: number, remaining: number, failed: number) => void,
 ): Promise<{ success: boolean; completed: number; failed: number; reason?: string }> => {
   const moveDestination = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+  
 
   if (!moveDestination) {
     return { success: false, completed: 0, failed: 0, reason: "SCP_AE_TITLE not configured" };
@@ -88,11 +90,13 @@ export const handleCMove = async (
     console.warn(`[C-MOVE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "Unknown or inactive AE title" };
   }
-
+  
   if (caller.allowed_ip && remoteAddress !== caller.allowed_ip) {
     console.warn(`[C-MOVE] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "IP not allowed" };
   }
+
+  registerPendingMove(callingAeTitle, caller.hospital_id);
 
   // 2. Resolver ruta destino filtrando por hospital_id Y ae_title
   const { data: route, error: routeError } = await supabase
@@ -151,8 +155,9 @@ export const handleCMove = async (
       fs.writeFileSync(tempPath, buffer);
       tempFiles.push(tempPath);
 
-      const sent = await sendCStore(tempPath, route.host, route.port, calledAeTitle, moveDestination);
-
+      const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+      const sent = await sendCStore(tempPath, route.host, route.port, MY_AE, route.ae_title);
+      
       if (sent) { completed++; } else { failed++; }
     } catch (err) {
       console.error(`[C-MOVE] Failed to forward ${inst.sop_instance_uid}:`, err);
@@ -166,6 +171,8 @@ export const handleCMove = async (
   for (const f of tempFiles) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
+
+  clearPendingMove(callingAeTitle);
 
   console.log(`[C-MOVE] Done — completed: ${completed}, failed: ${failed}`);
   return { success: true, completed, failed };
@@ -189,6 +196,7 @@ const sendCStore = (
 
     request.on("response", (response: InstanceType<typeof CStoreResponse>) => {
       const status = response.getStatus();
+      console.log(`[C-STORE→] Status: 0x${status.toString(16).toUpperCase()} to ${calledAeTitle}@${host}:${port}`);
       if (status === Status.Success) {
         resolve(true);
       } else {

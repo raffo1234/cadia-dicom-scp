@@ -1,5 +1,7 @@
 import * as http from "http";
 import { Client, requests, responses, constants } from "dcmjs-dimse";
+import { registerPendingMove } from "./lib/pendingMoves";
+
 
 const { CFindRequest } = requests;
 const { CFindResponse } = responses;
@@ -197,12 +199,15 @@ export const startHttpServer = (): void => {
     if (req.method === "POST" && url === "/move") {
       try {
         const body = await parseBody(req);
-        const { host, port, aeTitle, studyInstanceUID } = body;
+        const { host, port, aeTitle, studyInstanceUID, hospitalId } = body;
+
 
         if (!host || !port || !aeTitle || !studyInstanceUID) {
           send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
           return;
         }
+
+        registerPendingMove(aeTitle, hospitalId);
 
         console.log(
           `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${SCP_AE_TITLE}`,
