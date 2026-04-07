@@ -41,7 +41,7 @@ export const handleCMove = async (
   const { data: route, error: routeError } = await supabase
     .from("ae_route")
     .select("host, port, ae_title")
-    .eq("hospital_id", hospital.id)
+    .eq("hospital_id", hospital.hospital_id)
     .eq("ae_title", moveDestination)
     .eq("is_active", true)
     .maybeSingle();
@@ -69,7 +69,7 @@ export const handleCMove = async (
   });
 
   // 4. Find instances to move
-  const instances = await resolveInstances(hospital.id, query, queryLevel);
+  const instances = await resolveInstances(hospital.hospital_id, query, queryLevel);
   if (instances.length === 0) {
     console.log(`[C-MOVE] No instances found for query`);
     return { success: true, completed: 0, failed: 0 };
@@ -86,7 +86,7 @@ export const handleCMove = async (
     let tempPath: string | null = null;
     try {
       // Download from R2
-      const buffer = await downloadFromR2(hospital.r2_bucket, storageUrlToKey(inst.storage_url));
+      const buffer = await downloadFromR2(hospital.hospital.r2_bucket, storageUrlToKey(inst.storage_url));
 
       // Write to temp file — CStoreRequest needs a file path
       tempPath = path.join(os.tmpdir(), `cadia-cmove-${inst.sop_instance_uid}.dcm`);

@@ -7,8 +7,8 @@ RUN yarn install --frozen-lockfile
 
 COPY . .
 
-RUN yarn global add ts-node typescript
+RUN yarn tsc --build
 
-EXPOSE 11112
+EXPOSE 11112 3001
 
-CMD ["ts-node", "src/server.ts"]
+CMD ["node", "dist/server.js"]
