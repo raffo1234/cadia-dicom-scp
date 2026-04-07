@@ -36,12 +36,12 @@ export const handleCFind = async (
   }
 
   console.log(
-    `[C-FIND] ${callingAeTitle} → ${calledAeTitle} (${hospital.name}) | Level: ${queryLevel}`,
+    `[C-FIND] ${callingAeTitle} → ${calledAeTitle} (${hospital.hospital.name}) | Level: ${queryLevel}`,
   );
 
   // Audit log
   await supabase.from("dicom_audit_log").insert({
-    hospital_id: hospital.id,
+    hospital_id: hospital.hospital_id,
     action: "c-find",
     ae_title: callingAeTitle,
     ip_address: remoteAddress,
@@ -49,9 +49,9 @@ export const handleCFind = async (
 
   try {
     if (queryLevel === "STUDY") {
-      return await handleStudyLevelFind(hospital.id, query);
+      return await handleStudyLevelFind(hospital.hospital_id, query);
     } else if (queryLevel === "SERIES") {
-      return await handleSeriesLevelFind(hospital.id, query);
+      return await handleSeriesLevelFind(hospital.hospital_id, query);
     } else {
       return { success: false, reason: `Unsupported query level: ${queryLevel}` };
     }

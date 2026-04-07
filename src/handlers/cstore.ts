@@ -82,6 +82,12 @@ export const handleCStore = async (
     return { success: false, reason: "Unknown or inactive AE title" };
   }
 
+  // IP allowlist check
+  if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
+    console.warn(`[C-STORE] Rejected IP ${remoteAddress} for AE title ${calledAeTitle}`);
+    return { success: false, reason: "IP not allowed" };
+  }
+
   let dataset: Record<string, any>;
   let fileBuffer: Buffer;
 
@@ -125,7 +131,7 @@ export const handleCStore = async (
   let storageUrl: string;
 
   try {
-    storageUrl = await uploadToR2(hospital.r2_bucket, storagePath, fileBuffer);
+    storageUrl = await uploadToR2(hospital.hospital.r2_bucket, storagePath, fileBuffer);
   } catch (err) {
     console.error(`[C-STORE] R2 upload failed for ${sopInstanceUID}:`, err);
     return { success: false, reason: "Failed to upload to storage" };
@@ -165,7 +171,7 @@ export const handleCStore = async (
     .from("dicom_study")
     .select("id, received_instances, total_instances")
     .eq("study_instance_uid", studyInstanceUID)
-    .eq("hospital_id", hospital.id)
+    .eq("hospital_id", hospital.hospital_id)
     .maybeSingle();
 
   if (!existingStudy) {
@@ -174,7 +180,7 @@ export const handleCStore = async (
       .from("dicom_study")
       .insert({
         study_instance_uid: studyInstanceUID,
-        hospital_id: hospital.id,
+        hospital_id: hospital.hospital_id,
         ae_title_source: callingAeTitle,
         ae_title_destination: calledAeTitle,
         patient_name: tag(dataset, "PatientName"),
@@ -200,7 +206,7 @@ export const handleCStore = async (
     // Audit log
     await supabase.from("dicom_audit_log").insert({
       study_id: newStudy.id,
-      hospital_id: hospital.id,
+      hospital_id: hospital.hospital_id,
       action: "c-store",
       ae_title: callingAeTitle,
       ip_address: remoteAddress,
@@ -239,8 +245,8 @@ export const handleCStore = async (
   }
 
   console.log(
-    `[C-STORE] ✓ ${sopInstanceUID} → ${hospital.name} (${hospital.r2_bucket})`,
+    `[C-STORE] ✓ ${sopInstanceUID} → ${hospital.hospital.name} (${hospital.hospital.r2_bucket})`,
   );
 
-  return { success: true, studyInstanceUID, hospitalId: hospital.id };
+  return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
 };

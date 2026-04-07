@@ -198,19 +198,17 @@ export const startHttpServer = (): void => {
 
     // ── POST /move ────────────────────────────────────────────────────────────
     // Body: { host, port, aeTitle, moveDestination, studyInstanceUID }
-    // moveDestination = our SCP AE title so the PACS sends files back to us
+    // moveDestination = the ae_title from the hospital_access table in Supabase
+    // Callers should resolve the AE title via hospital_access before calling this endpoint
     if (req.method === "POST" && url === "/move") {
       try {
         const body = await parseBody(req);
-        const { host, port, aeTitle, studyInstanceUID } = body;
+        const { host, port, aeTitle, studyInstanceUID, moveDestination } = body;
 
-        if (!host || !port || !aeTitle || !studyInstanceUID) {
-          send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
+        if (!host || !port || !aeTitle || !studyInstanceUID || !moveDestination) {
+          send(res, 400, { error: "host, port, aeTitle, studyInstanceUID and moveDestination are required" });
           return;
         }
-
-        // moveDestination = our own AE title so the PACS sends the files back to us
-        const moveDestination = SCP_AE_TITLE;
 
         console.log(
           `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${moveDestination}`,

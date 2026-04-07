@@ -22,12 +22,12 @@ export const handleCEcho = async (
   }
 
   console.log(
-    `[C-ECHO] ${callingAeTitle} → ${calledAeTitle} (${hospital.name}) from ${remoteAddress}`,
+    `[C-ECHO] ${callingAeTitle} → ${calledAeTitle} (${hospital.hospital.name}) from ${remoteAddress}`,
   );
 
   // Audit log
   await supabase.from("dicom_audit_log").insert({
-    hospital_id: hospital.id,
+    hospital_id: hospital.hospital_id,
     action: "c-echo",
     ae_title: callingAeTitle,
     ip_address: remoteAddress,

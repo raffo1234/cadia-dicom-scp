@@ -6,6 +6,16 @@ export interface Hospital {
   r2_bucket: string;
 }
 
+export interface HospitalAccess {
+  id: string;
+  hospital_id: string;
+  name: string;
+  ae_title: string;
+  allowed_ip: string | null;
+  is_active: boolean;
+  hospital: Hospital;
+}
+
 export interface DicomStudyInsert {
   study_instance_uid: string;
   hospital_id: string;
