@@ -234,7 +234,7 @@ const resolveInstances = async (
   }
 
   if (studyUids.length === 0) return [];
-
+  
   const { data: studies, error } = await supabase
     .from("dicom_study")
     .select("instances")

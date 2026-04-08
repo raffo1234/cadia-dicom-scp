@@ -4,7 +4,7 @@ import { Dataset } from "dcmjs-dimse";
 import { hospitalRegistry } from "../lib/hospitalRegistry";
 import { uploadToR2 } from "../lib/r2";
 import { supabase } from "../lib/supabase";
-import { DicomInstanceInsert } from "../types";
+import { DicomInstanceInsert, HospitalAccess } from "../types";
 import { resolveHospitalFromPendingMove } from "../lib/pendingMoves";
 
 /**
@@ -67,19 +67,31 @@ const tagFloatArray = (dataset: Record<string, any>, key: string): number[] | un
 };
 
 /**
- * Checks if a calling AE title is a known C-MOVE destination (ae_route),
- * meaning this C-STORE is a callback from a forwarding operation — not a
- * modality sending a study. We trust it and skip the registry check.
+ * Resolves a hospital record by ID, returning it in the same shape
+ * as hospitalRegistry.findByAeTitle() so the rest of handleCStore works unchanged.
  */
-const isKnownRouteAeTitle = async (aeTitle: string, hospitalId: string): Promise<boolean> => {
+const resolveHospitalById = async (hospitalId: string): Promise<HospitalAccess | null> => {
   const { data } = await supabase
-    .from("ae_route")
-    .select("id")
-    .eq("ae_title", aeTitle)
-    .eq("hospital_id", hospitalId)
-    .eq("is_active", true)
-    .limit(1);
-  return !!data && data.length > 0;
+    .from("hospital")
+    .select("id, name, r2_bucket")
+    .eq("id", hospitalId)
+    .maybeSingle();
+
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    hospital_id: hospitalId,
+    name: data.name,
+    ae_title: "",
+    allowed_ip: null,
+    is_active: true,
+    hospital: {
+      id: data.id,
+      name: data.name,
+      r2_bucket: data.r2_bucket,
+    },
+  } as unknown as HospitalAccess;
 };
 
 /**
@@ -93,29 +105,28 @@ export const handleCStore = async (
   rawDataset: Dataset,
 ): Promise<{ success: boolean; reason?: string; studyInstanceUID?: string; hospitalId?: string }> => {
   // 1. Validate AE title
-  const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
+  let hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
-    // Before rejecting, check if this is a known C-MOVE destination calling back.
-    // Destinations in ae_route are trusted — they connect back as part of forwarding.
+    // Check if this is Orthanc (or any ae_route destination) calling back
+    // as part of a C-MOVE operation initiated by us.
     const hospitalId = resolveHospitalFromPendingMove(callingAeTitle);
-    
-    const isRoute = hospitalId 
-    ? await isKnownRouteAeTitle(callingAeTitle, hospitalId)
-    : false;
-  
-    console.log(`[C-STORE] isKnownRouteAeTitle("${callingAeTitle}") = ${isRoute}`);
 
-    if (isRoute) {
-      console.log(`[C-STORE] Accepted C-MOVE callback from route AE: ${callingAeTitle}`);
-      return { success: true };
+    if (!hospitalId) {
+      console.warn(`[C-STORE] Rejected unknown AE title: ${callingAeTitle}`);
+      return { success: false, reason: "Unknown or inactive AE title" };
     }
 
-    console.warn(`[C-STORE] Rejected unknown AE title: ${callingAeTitle}`);
-    return { success: false, reason: "Unknown or inactive AE title" };
+    console.log(`[C-STORE] C-MOVE callback from ${callingAeTitle} → resolving hospital ${hospitalId}`);
+    hospital = await resolveHospitalById(hospitalId);
+
+    if (!hospital) {
+      console.warn(`[C-STORE] Could not resolve hospital ${hospitalId} for C-MOVE callback`);
+      return { success: false, reason: "Could not resolve hospital" };
+    }
   }
 
-  // IP allowlist check
+  // IP allowlist check (skipped for C-MOVE callbacks since allowed_ip is null)
   if (hospital.allowed_ip && remoteAddress !== hospital.allowed_ip) {
     console.warn(`[C-STORE] Rejected IP ${remoteAddress} for AE title ${calledAeTitle}`);
     return { success: false, reason: "IP not allowed" };
