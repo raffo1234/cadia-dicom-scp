@@ -22,7 +22,7 @@ export const r2 = new S3Client({
 });
 
 export const uploadToR2 = async (
-  folder: string,  // hospital folder e.g. "cadia-grau"
+  folder: string,  // hospital folder e.g. "CADIA.PE"
   key: string,     // dicom/<study>/<series>/<sop>.dcm
   body: Buffer,
 ): Promise<string> => {
@@ -37,7 +37,7 @@ export const uploadToR2 = async (
     }),
   );
 
-  return fullKey; // e.g. "cadia-grau/dicom/<study>/<series>/<sop>.dcm"
+  return fullKey; // e.g. "CADIA.PE/dicom/<study>/<series>/<sop>.dcm"
 };
 
 export const downloadFromR2 = async (

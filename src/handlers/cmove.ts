@@ -77,7 +77,7 @@ export const handleCMove = async (
   queryLevel: "STUDY" | "SERIES" | "IMAGE",
   onPending: (completed: number, remaining: number, failed: number) => void,
 ): Promise<{ success: boolean; completed: number; failed: number; reason?: string }> => {
-  const moveDestination = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+  const moveDestination = process.env.SCP_AE_TITLE ?? "CADIA.PE";
   
 
   if (!moveDestination) {
@@ -155,7 +155,7 @@ export const handleCMove = async (
       fs.writeFileSync(tempPath, buffer);
       tempFiles.push(tempPath);
 
-      const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+      const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
       const sent = await sendCStore(tempPath, route.host, route.port, MY_AE, route.ae_title);
       
       if (sent) { completed++; } else { failed++; }

@@ -8,7 +8,7 @@ const { CFindResponse } = responses;
 const { Status } = constants;
 
 const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? "3001", 10);
-const SCP_AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA-GRAU";
+const SCP_AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
 
 // ─── C-FIND SCU ───────────────────────────────────────────────────────────────
 

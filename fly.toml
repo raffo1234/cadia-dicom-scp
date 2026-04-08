@@ -4,7 +4,7 @@ primary_region = 'gru'
 [build]
 
 [env]
-  SCP_AE_TITLE = 'CADIA-GRAU'
+  SCP_AE_TITLE = 'CADIA.PE'
   SCP_PORT = '11112'
 
 [http_service]
