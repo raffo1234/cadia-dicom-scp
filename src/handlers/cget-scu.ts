@@ -4,10 +4,12 @@ import { registerPendingMove, clearPendingMove } from "../lib/pendingMoves";
 import { completeStudiesForAssociation } from "../lib/studyCompletion";
 
 const { CGetRequest } = requests;
-const { CGetResponse, CStoreResponse } = responses;
+const { CStoreResponse } = responses;
 const { Status } = constants;
 
-type CGetResponseInstance = InstanceType<typeof CGetResponse>;
+type CGetResponseType = InstanceType<typeof responses.CGetResponse>;
+type CStoreRequestType = InstanceType<typeof requests.CStoreRequest>;
+type CStoreResponseType = InstanceType<typeof responses.CStoreResponse>;
 
 interface CGetOptions {
   host: string;
@@ -19,6 +21,7 @@ interface CGetOptions {
   queryLevel?: "STUDY" | "SERIES" | "IMAGE";
   seriesInstanceUID?: string;
   sopInstanceUID?: string;
+  maxRetries?: number;
 }
 
 interface CGetResult {
@@ -26,7 +29,13 @@ interface CGetResult {
   failed: number;
 }
 
-export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
+interface RetryableError extends Error {
+  retryable: boolean;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms));
+
+const attempt = (opts: CGetOptions): Promise<CGetResult> => {
   return new Promise((resolve, reject) => {
     const {
       host,
@@ -42,55 +51,39 @@ export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
 
     const result: CGetResult = { completed: 0, failed: 0 };
 
-    const dataset: Record<string, any> = {
-      QueryRetrieveLevel: queryLevel,
-      StudyInstanceUID: studyInstanceUID,
-    };
-
-    if (queryLevel === "SERIES" && seriesInstanceUID) {
-      dataset.SeriesInstanceUID = seriesInstanceUID;
-    }
-    if (queryLevel === "IMAGE" && sopInstanceUID) {
-      dataset.SOPInstanceUID = sopInstanceUID;
-    }
-
     let request: InstanceType<typeof CGetRequest>;
 
     if (queryLevel === "STUDY") {
-      request = (CGetRequest as any).createStudyGetRequest(studyInstanceUID);
+      request = CGetRequest.createStudyGetRequest(studyInstanceUID);
     } else if (queryLevel === "SERIES" && seriesInstanceUID) {
-      request = (CGetRequest as any).createSeriesGetRequest(studyInstanceUID, seriesInstanceUID);
+      request = CGetRequest.createSeriesGetRequest(studyInstanceUID, seriesInstanceUID);
     } else if (queryLevel === "IMAGE" && sopInstanceUID && seriesInstanceUID) {
-      request = (CGetRequest as any).createImageGetRequest(
+      request = CGetRequest.createImageGetRequest(
         studyInstanceUID,
         seriesInstanceUID,
         sopInstanceUID,
       );
     } else {
       request = new CGetRequest();
-      request.setDataset(new Dataset(dataset));
+      request.setDataset(
+        new Dataset({ QueryRetrieveLevel: queryLevel, StudyInstanceUID: studyInstanceUID }),
+      );
     }
 
-    // Register DLQ_GRAU as a known source so handleCStore can resolve the hospital
     registerPendingMove(calledAeTitle, hospitalId);
 
-    request.on("response", async (response: CGetResponseInstance) => {
+    request.on("response", async (response: CGetResponseType) => {
       const status = response.getStatus();
 
       if (status === Status.Pending) {
-        const completed = (response as any).getCompleted?.() ?? 0;
-        const remaining = (response as any).getRemaining?.() ?? 0;
-        const failed = (response as any).getFailures?.() ?? 0;
         console.log(
-          `[C-GET SCU] Progress — completed: ${completed}, remaining: ${remaining}, failed: ${failed}`,
+          `[C-GET SCU] Progress — completed: ${response.getCompleted()}, remaining: ${response.getRemaining()}, failed: ${response.getFailures()}`,
         );
       } else if (status === Status.Success) {
-        result.completed = (response as any).getCompleted?.() ?? 0;
-        result.failed = (response as any).getFailures?.() ?? 0;
+        result.completed = response.getCompleted();
+        result.failed = response.getFailures();
         console.log(`[C-GET SCU] Done — completed: ${result.completed}, failed: ${result.failed}`);
-
         await completeStudiesForAssociation([studyInstanceUID], hospitalId);
-
         clearPendingMove(calledAeTitle);
         resolve(result);
       } else {
@@ -103,14 +96,26 @@ export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
 
     client.on("networkError", (err: Error) => {
       clearPendingMove(calledAeTitle);
-      reject(new Error(`[C-GET SCU] Network error: ${err.message}`));
+      const error: RetryableError = Object.assign(
+        new Error(`[C-GET SCU] Network error: ${err.message}`),
+        { retryable: true },
+      );
+      reject(error);
     });
 
-    // Handle incoming C-STORE sub-operations sent by DLQ_GRAU during C-GET
-    (client as any).on(
+    client.on(
       "cStoreRequest",
-      async (storeRequest: any, storeCallback: (response: any) => void) => {
+      async (
+        storeRequest: CStoreRequestType,
+        storeCallback: (response: CStoreResponseType) => void,
+      ) => {
         const storeDataset = storeRequest.getDataset();
+        if (!storeDataset) {
+          const failed = CStoreResponse.fromRequest(storeRequest);
+          failed.setStatus(Status.ProcessingFailure);
+          storeCallback(failed);
+          return;
+        }
         const storeResult = await handleCStore(calledAeTitle, callingAeTitle, host, storeDataset);
         const storeResponse = CStoreResponse.fromRequest(storeRequest);
         storeResponse.setStatus(storeResult.success ? Status.Success : Status.ProcessingFailure);
@@ -121,4 +126,32 @@ export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
     client.addRequest(request);
     client.send(host, port, callingAeTitle, calledAeTitle);
   });
+};
+
+export const getRemoteStudy = async (opts: CGetOptions): Promise<CGetResult> => {
+  const maxRetries = opts.maxRetries ?? 5;
+  let lastError: Error | undefined;
+
+  for (let i = 0; i <= maxRetries; i++) {
+    if (i > 0) {
+      const delayMs = Math.pow(2, i) * 1000; // 2s, 4s, 8s, 16s, 32s
+      console.log(`[C-GET SCU] Retry ${i}/${maxRetries} in ${delayMs / 1000}s...`);
+      await sleep(delayMs);
+    }
+
+    try {
+      return await attempt(opts);
+    } catch (err: unknown) {
+      if (!(err instanceof Error)) {
+        throw err;
+      }
+      lastError = err;
+      if (!(err as RetryableError).retryable) {
+        throw err;
+      }
+      console.warn(`[C-GET SCU] Attempt ${i + 1} failed: ${err.message}`);
+    }
+  }
+
+  throw lastError ?? new Error("[C-GET SCU] All retries exhausted");
 };
