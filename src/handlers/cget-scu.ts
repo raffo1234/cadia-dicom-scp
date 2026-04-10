@@ -1,6 +1,7 @@
 import { Client, requests, responses, constants, Dataset } from "dcmjs-dimse";
 import { handleCStore } from "./cstore";
 import { registerPendingMove, clearPendingMove } from "../lib/pendingMoves";
+import { completeStudiesForAssociation } from "../lib/studyCompletion";
 
 const { CGetRequest } = requests;
 const { CGetResponse, CStoreResponse } = responses;
@@ -73,7 +74,7 @@ export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
     // Register DLQ_GRAU as a known source so handleCStore can resolve the hospital
     registerPendingMove(calledAeTitle, hospitalId);
 
-    request.on("response", (response: CGetResponseInstance) => {
+    request.on("response", async (response: CGetResponseInstance) => {
       const status = response.getStatus();
 
       if (status === Status.Pending) {
@@ -87,6 +88,9 @@ export const getRemoteStudy = (opts: CGetOptions): Promise<CGetResult> => {
         result.completed = (response as any).getCompleted?.() ?? 0;
         result.failed = (response as any).getFailures?.() ?? 0;
         console.log(`[C-GET SCU] Done — completed: ${result.completed}, failed: ${result.failed}`);
+
+        await completeStudiesForAssociation([studyInstanceUID], hospitalId);
+
         clearPendingMove(calledAeTitle);
         resolve(result);
       } else {
