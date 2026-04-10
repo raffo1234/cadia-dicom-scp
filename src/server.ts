@@ -7,10 +7,12 @@ import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 import { startHttpServer } from "./http";
+import { handleCGet } from "./handlers/cget";
 
-const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
+const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse, CGetResponse } = responses;
 const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
 
+type CGetResponseInstance = InstanceType<typeof CGetResponse>;
 type CFindResponseInstance = InstanceType<typeof CFindResponse>;
 type CMoveResponseInstance = InstanceType<typeof CMoveResponse>;
 
@@ -27,6 +29,46 @@ class CadiaScp extends Scp {
   constructor(socket: any, opts: any) {
     super(socket, opts);
     this.remoteAddress = socket.remoteAddress ?? "unknown";
+  }
+
+  async cGetRequest(
+    request: any,
+    callback: (responses: CGetResponseInstance[]) => void,
+  ): Promise<void> {
+    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
+    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
+    const dataset = request.getDataset()?.getElements() ?? {};
+    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase() as
+      | "STUDY"
+      | "SERIES"
+      | "IMAGE";
+
+    const pendingResponses: CGetResponseInstance[] = [];
+
+    const result = await handleCGet(
+      callingAeTitle,
+      calledAeTitle,
+      this.remoteAddress,
+      dataset,
+      queryLevel,
+      (completed, remaining, failed) => {
+        const pending = CGetResponse.fromRequest(request);
+        pending.setStatus(Status.Pending);
+        (pending as any).setCompleted(completed);
+        (pending as any).setRemaining(remaining);
+        (pending as any).setFailures(failed);
+        pendingResponses.push(pending);
+      },
+    );
+
+    const final = CGetResponse.fromRequest(request);
+    final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+    (final as any).setCompleted(result.completed);
+    (final as any).setRemaining(0);
+    (final as any).setFailures(result.failed);
+    pendingResponses.push(final);
+
+    callback(pendingResponses);
   }
 
   associationRequested(association: any): void {
@@ -49,7 +91,8 @@ class CadiaScp extends Scp {
       const isStorage = Object.values(StorageClass).includes(abstractSyntax);
       const isQueryRetrieve =
         abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind ||
-        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelMove;
+        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelMove ||
+        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelGet;
 
       if (isVerification || isStorage || isQueryRetrieve) {
         let accepted = false;
