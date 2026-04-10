@@ -1,5 +1,5 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const dcmjsData = require('dcmjs').data;
+const dcmjsData = require("dcmjs").data;
 import { Dataset } from "dcmjs-dimse";
 import { hospitalRegistry } from "../lib/hospitalRegistry";
 import { uploadToR2 } from "../lib/r2";
@@ -39,8 +39,10 @@ const tagFloat = (dataset: Record<string, any>, key: string): number | undefined
   const v = Array.isArray(val)
     ? val[0]
     : val?.Value
-    ? Array.isArray(val.Value) ? val.Value[0] : val.Value
-    : val;
+      ? Array.isArray(val.Value)
+        ? val.Value[0]
+        : val.Value
+      : val;
   const n = parseFloat(String(v));
   return isNaN(n) ? undefined : n;
 };
@@ -51,8 +53,10 @@ const tagInt = (dataset: Record<string, any>, key: string): number | undefined =
   const v = Array.isArray(val)
     ? val[0]
     : val?.Value
-    ? Array.isArray(val.Value) ? val.Value[0] : val.Value
-    : val;
+      ? Array.isArray(val.Value)
+        ? val.Value[0]
+        : val.Value
+      : val;
   const n = parseInt(String(v), 10);
   return isNaN(n) ? undefined : n;
 };
@@ -103,7 +107,12 @@ export const handleCStore = async (
   calledAeTitle: string,
   remoteAddress: string,
   rawDataset: Dataset,
-): Promise<{ success: boolean; reason?: string; studyInstanceUID?: string; hospitalId?: string }> => {
+): Promise<{
+  success: boolean;
+  reason?: string;
+  studyInstanceUID?: string;
+  hospitalId?: string;
+}> => {
   // 1. Validate AE title
   let hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
@@ -117,7 +126,9 @@ export const handleCStore = async (
       return { success: false, reason: "Unknown or inactive AE title" };
     }
 
-    console.log(`[C-STORE] C-MOVE callback from ${callingAeTitle} → resolving hospital ${hospitalId}`);
+    console.log(
+      `[C-STORE] C-MOVE callback from ${callingAeTitle} → resolving hospital ${hospitalId}`,
+    );
     hospital = await resolveHospitalById(hospitalId);
 
     if (!hospital) {
@@ -200,8 +211,12 @@ export const handleCStore = async (
     photometric_interpretation: tag(dataset, "PhotometricInterpretation") ?? "MONOCHROME2",
     slice_thickness: tagFloat(dataset, "SliceThickness"),
     pixel_spacing: tagFloatArray(dataset, "PixelSpacing") as [number, number] | undefined,
-    image_orientation: tagFloatArray(dataset, "ImageOrientationPatient") as [number, number, number, number, number, number] | undefined,
-    image_position: tagFloatArray(dataset, "ImagePositionPatient") as [number, number, number] | undefined,
+    image_orientation: tagFloatArray(dataset, "ImageOrientationPatient") as
+      | [number, number, number, number, number, number]
+      | undefined,
+    image_position: tagFloatArray(dataset, "ImagePositionPatient") as
+      | [number, number, number]
+      | undefined,
     window_center: tagFloat(dataset, "WindowCenter"),
     window_width: tagFloat(dataset, "WindowWidth"),
     rescale_intercept: tagFloat(dataset, "RescaleIntercept"),
@@ -259,8 +274,7 @@ export const handleCStore = async (
     // Subsequent instance — append to instances array and increment counter
     const newReceivedInstances = existingStudy.received_instances + 1;
     const isComplete =
-      existingStudy.total_instances > 0 &&
-      newReceivedInstances >= existingStudy.total_instances;
+      existingStudy.total_instances > 0 && newReceivedInstances >= existingStudy.total_instances;
 
     // Append instance to jsonb array atomically via rpc
     const { error: appendError } = await supabase.rpc("append_dicom_instance", {

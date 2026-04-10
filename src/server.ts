@@ -1,11 +1,5 @@
-import 'dotenv/config';
-import {
-  Server,
-  Scp,
-  responses,
-  constants,
-  Dataset,
-} from "dcmjs-dimse";
+import "dotenv/config";
+import { Server, Scp, responses, constants, Dataset } from "dcmjs-dimse";
 import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
@@ -15,13 +9,7 @@ import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/st
 import { startHttpServer } from "./http";
 
 const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
-const {
-  Status,
-  PresentationContextResult,
-  TransferSyntax,
-  SopClass,
-  StorageClass,
-} = constants;
+const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
 
 type CFindResponseInstance = InstanceType<typeof CFindResponse>;
 type CMoveResponseInstance = InstanceType<typeof CMoveResponse>;
@@ -49,9 +37,7 @@ class CadiaScp extends Scp {
     const callingAeTitle = association.getCallingAeTitle().trim();
     const calledAeTitle = association.getCalledAeTitle().trim();
 
-    console.log(
-      `[Association] ${callingAeTitle} → ${calledAeTitle} from ${this.remoteAddress}`,
-    );
+    console.log(`[Association] ${callingAeTitle} → ${calledAeTitle} from ${this.remoteAddress}`);
 
     const contexts = association.getPresentationContexts();
     contexts.forEach((c: any) => {
@@ -92,10 +78,7 @@ class CadiaScp extends Scp {
     this.sendAssociationReleaseResponse();
 
     if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
-      await completeStudiesForAssociation(
-        Array.from(this.receivedStudyUIDs),
-        this.hospitalId,
-      );
+      await completeStudiesForAssociation(Array.from(this.receivedStudyUIDs), this.hospitalId);
     }
   }
 
@@ -115,12 +98,7 @@ class CadiaScp extends Scp {
     const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
     const dataset = request.getDataset();
 
-    const result = await handleCStore(
-      callingAeTitle,
-      calledAeTitle,
-      this.remoteAddress,
-      dataset,
-    );
+    const result = await handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset);
 
     // Track study UIDs received in this association for completion on release
     if (result.success && result.studyInstanceUID && result.hospitalId) {
@@ -173,7 +151,6 @@ class CadiaScp extends Scp {
     request: any,
     callback: (responses: CMoveResponseInstance[]) => void,
   ): Promise<void> {
-    
     const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
     const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
     const dataset = request.getDataset()?.getElements() ?? {};
@@ -181,8 +158,6 @@ class CadiaScp extends Scp {
       | "STUDY"
       | "SERIES"
       | "IMAGE";
-
-    
 
     const pendingResponses: CMoveResponseInstance[] = [];
 
@@ -219,7 +194,7 @@ const start = async (): Promise<void> => {
   await hospitalRegistry.init();
   startCompletionWatchdog();
   startHttpServer();
-  
+
   const server = new Server(CadiaScp);
   server.on("networkError", (e: any) => {
     console.error("[SCP] Network error:", e);

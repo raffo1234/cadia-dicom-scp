@@ -78,7 +78,6 @@ export const handleCMove = async (
   onPending: (completed: number, remaining: number, failed: number) => void,
 ): Promise<{ success: boolean; completed: number; failed: number; reason?: string }> => {
   const moveDestination = process.env.SCP_AE_TITLE ?? "CADIA.PE";
-  
 
   if (!moveDestination) {
     return { success: false, completed: 0, failed: 0, reason: "SCP_AE_TITLE not configured" };
@@ -90,7 +89,7 @@ export const handleCMove = async (
     console.warn(`[C-MOVE] Rejected unknown AE title: ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "Unknown or inactive AE title" };
   }
-  
+
   if (caller.allowed_ip && remoteAddress !== caller.allowed_ip) {
     console.warn(`[C-MOVE] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
     return { success: false, completed: 0, failed: 0, reason: "IP not allowed" };
@@ -146,10 +145,7 @@ export const handleCMove = async (
   for (const inst of instances) {
     let tempPath: string | null = null;
     try {
-      const buffer = await downloadFromR2(
-        caller.r2_bucket,
-        storageUrlToKey(inst.storage_url),
-      );
+      const buffer = await downloadFromR2(caller.r2_bucket, storageUrlToKey(inst.storage_url));
 
       tempPath = path.join(os.tmpdir(), `cadia-cmove-${inst.sop_instance_uid}.dcm`);
       fs.writeFileSync(tempPath, buffer);
@@ -157,8 +153,12 @@ export const handleCMove = async (
 
       const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
       const sent = await sendCStore(tempPath, route.host, route.port, MY_AE, route.ae_title);
-      
-      if (sent) { completed++; } else { failed++; }
+
+      if (sent) {
+        completed++;
+      } else {
+        failed++;
+      }
     } catch (err) {
       console.error(`[C-MOVE] Failed to forward ${inst.sop_instance_uid}:`, err);
       failed++;
@@ -169,7 +169,11 @@ export const handleCMove = async (
 
   // 6. Cleanup temp files
   for (const f of tempFiles) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
 
   clearPendingMove(callingAeTitle);
@@ -196,7 +200,9 @@ const sendCStore = (
 
     request.on("response", (response: InstanceType<typeof CStoreResponse>) => {
       const status = response.getStatus();
-      console.log(`[C-STORE→] Status: 0x${status.toString(16).toUpperCase()} to ${calledAeTitle}@${host}:${port}`);
+      console.log(
+        `[C-STORE→] Status: 0x${status.toString(16).toUpperCase()} to ${calledAeTitle}@${host}:${port}`,
+      );
       if (status === Status.Success) {
         resolve(true);
       } else {
@@ -234,7 +240,7 @@ const resolveInstances = async (
   }
 
   if (studyUids.length === 0) return [];
-  
+
   const { data: studies, error } = await supabase
     .from("dicom_study")
     .select("instances")

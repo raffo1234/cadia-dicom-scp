@@ -2,7 +2,6 @@ import * as http from "http";
 import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { registerPendingMove } from "./lib/pendingMoves";
 
-
 const { CFindRequest } = requests;
 const { CFindResponse } = responses;
 const { Status } = constants;
@@ -47,9 +46,7 @@ const executeCFind = (
             StudyDate: elements.StudyDate ?? "",
             StudyDescription: elements.StudyDescription ?? "",
             Modality: elements.Modality ?? "",
-            NumberOfStudyRelatedInstances: String(
-              elements.NumberOfStudyRelatedInstances ?? "",
-            ),
+            NumberOfStudyRelatedInstances: String(elements.NumberOfStudyRelatedInstances ?? ""),
           });
         }
       }
@@ -84,10 +81,7 @@ const executeCMove = (
 
     // SCP_AE_TITLE is always the move destination — the SCP resolves the actual
     // route internally via ae_route (mirrors cmove.ts behaviour)
-    const request = requests.CMoveRequest.createStudyMoveRequest(
-      SCP_AE_TITLE,
-      studyInstanceUID,
-    );
+    const request = requests.CMoveRequest.createStudyMoveRequest(SCP_AE_TITLE, studyInstanceUID);
 
     let completed = 0;
     let failed = 0;
@@ -201,7 +195,6 @@ export const startHttpServer = (): void => {
         const body = await parseBody(req);
         const { host, port, aeTitle, studyInstanceUID, hospitalId } = body;
 
-
         if (!host || !port || !aeTitle || !studyInstanceUID) {
           send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
           return;
@@ -214,7 +207,9 @@ export const startHttpServer = (): void => {
         );
 
         const result = await executeCMove(host, port, aeTitle, studyInstanceUID);
-        console.log(`[HTTP] C-MOVE done — completed: ${result.completed}, failed: ${result.failed}`);
+        console.log(
+          `[HTTP] C-MOVE done — completed: ${result.completed}, failed: ${result.failed}`,
+        );
         send(res, 200, result);
       } catch (err: any) {
         console.error("[HTTP] /move error:", err.message);

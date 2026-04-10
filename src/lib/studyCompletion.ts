@@ -35,7 +35,7 @@ export const completeStudiesForAssociation = async (
  * Catches edge cases where modality disconnects without releasing (crash, network drop).
  */
 export const startCompletionWatchdog = (): void => {
-  const INTERVAL_MS = 5 * 60 * 1000;   // every 5 minutes
+  const INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
   const STALE_AFTER_MS = 10 * 60 * 1000; // studies older than 10 minutes
 
   const run = async () => {

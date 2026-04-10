@@ -15,9 +15,7 @@ export const handleCEcho = async (
   const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
-    console.warn(
-      `[C-ECHO] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`,
-    );
+    console.warn(`[C-ECHO] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`);
     return { success: false, reason: "Unknown or inactive AE title" };
   }
 

@@ -22,8 +22,8 @@ export const r2 = new S3Client({
 });
 
 export const uploadToR2 = async (
-  folder: string,  // hospital folder e.g. "CADIA.PE"
-  key: string,     // dicom/<study>/<series>/<sop>.dcm
+  folder: string, // hospital folder e.g. "CADIA.PE"
+  key: string, // dicom/<study>/<series>/<sop>.dcm
   body: Buffer,
 ): Promise<string> => {
   const fullKey = `${folder}/${key}`;
@@ -40,10 +40,7 @@ export const uploadToR2 = async (
   return fullKey; // e.g. "CADIA.PE/dicom/<study>/<series>/<sop>.dcm"
 };
 
-export const downloadFromR2 = async (
-  folder: string,
-  key: string,
-): Promise<Buffer> => {
+export const downloadFromR2 = async (folder: string, key: string): Promise<Buffer> => {
   const bucket = process.env.CLOUDFLARE_R2_BUCKET ?? "dicoms";
   const result = await r2.send(
     new GetObjectCommand({
@@ -51,11 +48,11 @@ export const downloadFromR2 = async (
       Key: `${folder}/${key}`,
     }),
   );
- 
+
   if (!result.Body) {
     throw new Error(`Empty body from R2 for key: ${key}`);
   }
- 
+
   // Convert readable stream to Buffer
   const stream = result.Body as Readable;
   const chunks: Buffer[] = [];
@@ -64,4 +61,3 @@ export const downloadFromR2 = async (
   }
   return Buffer.concat(chunks);
 };
-

@@ -29,9 +29,7 @@ export const handleCFind = async (
   const hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
-    console.warn(
-      `[C-FIND] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`,
-    );
+    console.warn(`[C-FIND] Rejected unknown AE title: ${callingAeTitle} from ${remoteAddress}`);
     return { success: false, reason: "Unknown or inactive AE title" };
   }
 
@@ -75,7 +73,7 @@ const handleStudyLevelFind = async (
     .from("dicom_study")
     .select(
       "study_instance_uid, patient_name, patient_id, patient_age, patient_sex, " +
-      "study_description, study_date, modality, received_instances, receive_status",
+        "study_description, study_date, modality, received_instances, receive_status",
     )
     .eq("hospital_id", hospitalId)
     .eq("receive_status", "complete");
@@ -100,9 +98,9 @@ const handleStudyLevelFind = async (
   const { data, error } = await q.limit(200);
 
   if (error) {
-  console.error("[C-FIND] Study query error:", error.message);
-  return { success: false, reason: "Study query failed" };
-}
+    console.error("[C-FIND] Study query error:", error.message);
+    return { success: false, reason: "Study query failed" };
+  }
 
   const results = ((data ?? []) as unknown as StudyRow[]).map((row) => ({
     StudyInstanceUID: row.study_instance_uid,
