@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { Server, Scp, responses, constants, Dataset } from "dcmjs-dimse";
+import { Socket } from "net";
+import { Server, Scp, requests, responses, constants, Dataset, association } from "dcmjs-dimse";
 import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
@@ -7,83 +8,62 @@ import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 import { startHttpServer } from "./http";
-import { handleCGet } from "./handlers/cget";
+import { startSyncJob } from "./lib/syncJob";
 
-const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse, CGetResponse } = responses;
+const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
+const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest } = requests;
 const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
 
-type CGetResponseInstance = InstanceType<typeof CGetResponse>;
-type CFindResponseInstance = InstanceType<typeof CFindResponse>;
-type CMoveResponseInstance = InstanceType<typeof CMoveResponse>;
+type AssociationType = InstanceType<typeof association.Association>;
+type PresentationContextType = InstanceType<typeof association.PresentationContext>;
+
+type CEchoRequestType = InstanceType<typeof CEchoRequest>;
+type CStoreRequestType = InstanceType<typeof CStoreRequest>;
+type CFindRequestType = InstanceType<typeof CFindRequest>;
+type CMoveRequestType = InstanceType<typeof CMoveRequest>;
+
+type CEchoResponseType = InstanceType<typeof CEchoResponse>;
+type CStoreResponseType = InstanceType<typeof CStoreResponse>;
+type CFindResponseType = InstanceType<typeof CFindResponse>;
+type CMoveResponseType = InstanceType<typeof CMoveResponse>;
+
+type QueryLevel = "STUDY" | "SERIES" | "IMAGE";
 
 const SCP_PORT = parseInt(process.env.SCP_PORT ?? "104", 10);
 const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
 
+const toQueryLevel = (raw: unknown): QueryLevel => {
+  if (typeof raw !== "string") {
+    return "STUDY";
+  }
+  const s = raw.trim().toUpperCase();
+  return s === "SERIES" || s === "IMAGE" ? (s as QueryLevel) : "STUDY";
+};
+
 class CadiaScp extends Scp {
   private remoteAddress: string = "";
-  private association: any = undefined;
-  // Track study UIDs and hospital received during this association
+  private currentAssociation: AssociationType | undefined = undefined;
   private receivedStudyUIDs: Set<string> = new Set();
   private hospitalId: string = "";
 
-  constructor(socket: any, opts: any) {
+  constructor(socket: Socket, opts: Record<string, unknown>) {
     super(socket, opts);
     this.remoteAddress = socket.remoteAddress ?? "unknown";
   }
 
-  async cGetRequest(
-    request: any,
-    callback: (responses: CGetResponseInstance[]) => void,
-  ): Promise<void> {
-    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
-    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
-    const dataset = request.getDataset()?.getElements() ?? {};
-    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase() as
-      | "STUDY"
-      | "SERIES"
-      | "IMAGE";
-
-    const pendingResponses: CGetResponseInstance[] = [];
-
-    const result = await handleCGet(
-      callingAeTitle,
-      calledAeTitle,
-      this.remoteAddress,
-      dataset,
-      queryLevel,
-      (completed, remaining, failed) => {
-        const pending = CGetResponse.fromRequest(request);
-        pending.setStatus(Status.Pending);
-        (pending as any).setCompleted(completed);
-        (pending as any).setRemaining(remaining);
-        (pending as any).setFailures(failed);
-        pendingResponses.push(pending);
-      },
-    );
-
-    const final = CGetResponse.fromRequest(request);
-    final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-    (final as any).setCompleted(result.completed);
-    (final as any).setRemaining(0);
-    (final as any).setFailures(result.failed);
-    pendingResponses.push(final);
-
-    callback(pendingResponses);
-  }
-
-  associationRequested(association: any): void {
-    this.association = association;
+  associationRequested(assoc: AssociationType): void {
+    this.currentAssociation = assoc;
     this.receivedStudyUIDs = new Set();
     this.hospitalId = "";
 
-    const callingAeTitle = association.getCallingAeTitle().trim();
-    const calledAeTitle = association.getCalledAeTitle().trim();
+    const callingAeTitle = assoc.getCallingAeTitle().trim();
+    const calledAeTitle = assoc.getCalledAeTitle().trim();
 
     console.log(`[Association] ${callingAeTitle} → ${calledAeTitle} from ${this.remoteAddress}`);
 
-    const contexts = association.getPresentationContexts();
-    contexts.forEach((c: any) => {
-      const context = association.getPresentationContext(c.id);
+    const contexts = assoc.getPresentationContexts();
+    contexts.forEach((c: PresentationContextType) => {
+      const context = assoc.getPresentationContext(c.id);
       const abstractSyntax = context.getAbstractSyntaxUid();
       const transferSyntaxes = context.getTransferSyntaxUids();
 
@@ -116,99 +96,115 @@ class CadiaScp extends Scp {
     this.sendAssociationAccept();
   }
 
-  // Modality finished sending — mark all received studies as complete
-  async associationReleaseRequested(): Promise<void> {
+  associationReleaseRequested(): void {
     this.sendAssociationReleaseResponse();
 
     if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
-      await completeStudiesForAssociation(Array.from(this.receivedStudyUIDs), this.hospitalId);
+      void completeStudiesForAssociation(Array.from(this.receivedStudyUIDs), this.hospitalId).catch(
+        (err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[SCP] Failed to complete studies on release:", msg);
+        },
+      );
     }
   }
 
-  async cEchoRequest(request: any, callback: (response: any) => void): Promise<void> {
-    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
-    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
+  cEchoRequest(request: CEchoRequestType, callback: (response: CEchoResponseType) => void): void {
+    const callingAeTitle = this.currentAssociation?.getCallingAeTitle().trim() ?? "";
+    const calledAeTitle = this.currentAssociation?.getCalledAeTitle().trim() ?? "";
 
-    const result = await handleCEcho(callingAeTitle, calledAeTitle, this.remoteAddress);
-
-    const response = CEchoResponse.fromRequest(request);
-    response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-    callback(response);
+    void handleCEcho(callingAeTitle, calledAeTitle, this.remoteAddress)
+      .then((result) => {
+        const response = CEchoResponse.fromRequest(request);
+        response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+        callback(response);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] cEchoRequest error:", msg);
+      });
   }
 
-  async cStoreRequest(request: any, callback: (response: any) => void): Promise<void> {
-    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
-    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
-    const dataset = request.getDataset();
+  cStoreRequest(
+    request: CStoreRequestType,
+    callback: (response: CStoreResponseType) => void,
+  ): void {
+    const callingAeTitle = this.currentAssociation?.getCallingAeTitle().trim() ?? "";
+    const calledAeTitle = this.currentAssociation?.getCalledAeTitle().trim() ?? "";
+    const dataset: Dataset | undefined = request.getDataset();
 
-    const result = await handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset);
-
-    // Track study UIDs received in this association for completion on release
-    if (result.success && result.studyInstanceUID && result.hospitalId) {
-      this.receivedStudyUIDs.add(result.studyInstanceUID);
-      this.hospitalId = result.hospitalId;
+    if (!dataset) {
+      const response = CStoreResponse.fromRequest(request);
+      response.setStatus(Status.ProcessingFailure);
+      callback(response);
+      return;
     }
 
-    const response = CStoreResponse.fromRequest(request);
-    response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-    callback(response);
+    void handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset)
+      .then((result) => {
+        if (result.success && result.studyInstanceUID && result.hospitalId) {
+          this.receivedStudyUIDs.add(result.studyInstanceUID);
+          this.hospitalId = result.hospitalId;
+        }
+        const response = CStoreResponse.fromRequest(request);
+        response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+        callback(response);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] cStoreRequest error:", msg);
+      });
   }
 
-  async cFindRequest(
-    request: any,
-    callback: (responses: CFindResponseInstance[]) => void,
-  ): Promise<void> {
-    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
-    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
-    const dataset = request.getDataset();
+  cFindRequest(
+    request: CFindRequestType,
+    callback: (responses: CFindResponseType[]) => void,
+  ): void {
+    const callingAeTitle = this.currentAssociation?.getCallingAeTitle().trim() ?? "";
+    const calledAeTitle = this.currentAssociation?.getCalledAeTitle().trim() ?? "";
+    const elements: Record<string, unknown> = request.getDataset()?.getElements() ?? {};
+    const queryLevel = toQueryLevel(elements.QueryRetrieveLevel);
 
-    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase();
+    void handleCFind(callingAeTitle, calledAeTitle, this.remoteAddress, elements, queryLevel)
+      .then((result) => {
+        const pendingResponses: CFindResponseType[] = [];
 
-    const result = await handleCFind(
+        if (result.success && result.results?.length) {
+          for (const match of result.results) {
+            const response = CFindResponse.fromRequest(request);
+            response.setStatus(Status.Pending);
+            response.setDataset(new Dataset(match));
+            pendingResponses.push(response);
+          }
+        }
+
+        const final = CFindResponse.fromRequest(request);
+        final.setStatus(Status.Success);
+        pendingResponses.push(final);
+        callback(pendingResponses);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] cFindRequest error:", msg);
+      });
+  }
+
+  cMoveRequest(
+    request: CMoveRequestType,
+    callback: (responses: CMoveResponseType[]) => void,
+  ): void {
+    const callingAeTitle = this.currentAssociation?.getCallingAeTitle().trim() ?? "";
+    const calledAeTitle = this.currentAssociation?.getCalledAeTitle().trim() ?? "";
+    const elements: Record<string, unknown> = request.getDataset()?.getElements() ?? {};
+    const queryLevel = toQueryLevel(elements.QueryRetrieveLevel);
+
+    const pendingResponses: CMoveResponseType[] = [];
+
+    void handleCMove(
       callingAeTitle,
       calledAeTitle,
       this.remoteAddress,
-      dataset,
-      queryLevel as "STUDY" | "SERIES" | "IMAGE",
-    );
-
-    const pendingResponses: CFindResponseInstance[] = [];
-
-    if (result.success && result.results?.length) {
-      for (const match of result.results) {
-        const response = CFindResponse.fromRequest(request);
-        response.setStatus(Status.Pending);
-        response.setDataset(new Dataset(match));
-        pendingResponses.push(response);
-      }
-    }
-
-    const final = CFindResponse.fromRequest(request);
-    final.setStatus(Status.Success);
-    pendingResponses.push(final);
-
-    callback(pendingResponses);
-  }
-
-  async cMoveRequest(
-    request: any,
-    callback: (responses: CMoveResponseInstance[]) => void,
-  ): Promise<void> {
-    const callingAeTitle = this.association?.getCallingAeTitle?.()?.trim() ?? "";
-    const calledAeTitle = this.association?.getCalledAeTitle?.()?.trim() ?? "";
-    const dataset = request.getDataset()?.getElements() ?? {};
-    const queryLevel = (dataset?.QueryRetrieveLevel ?? "STUDY").trim().toUpperCase() as
-      | "STUDY"
-      | "SERIES"
-      | "IMAGE";
-
-    const pendingResponses: CMoveResponseInstance[] = [];
-
-    const result = await handleCMove(
-      callingAeTitle,
-      calledAeTitle,
-      this.remoteAddress,
-      dataset,
+      elements,
       queryLevel,
       (completed, remaining, failed) => {
         const pending = CMoveResponse.fromRequest(request);
@@ -218,16 +214,20 @@ class CadiaScp extends Scp {
         pending.setFailures(failed);
         pendingResponses.push(pending);
       },
-    );
-
-    const final = CMoveResponse.fromRequest(request);
-    final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-    final.setCompleted(result.completed);
-    final.setRemaining(0);
-    final.setFailures(result.failed);
-    pendingResponses.push(final);
-
-    callback(pendingResponses);
+    )
+      .then((result) => {
+        const final = CMoveResponse.fromRequest(request);
+        final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+        final.setCompleted(result.completed);
+        final.setRemaining(0);
+        final.setFailures(result.failed);
+        pendingResponses.push(final);
+        callback(pendingResponses);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] cMoveRequest error:", msg);
+      });
   }
 }
 
@@ -236,18 +236,20 @@ const start = async (): Promise<void> => {
 
   await hospitalRegistry.init();
   startCompletionWatchdog();
+  startSyncJob();
   startHttpServer();
 
   const server = new Server(CadiaScp);
-  server.on("networkError", (e: any) => {
-    console.error("[SCP] Network error:", e);
+  server.on("networkError", (err: Error) => {
+    console.error("[SCP] Network error:", err.message);
   });
 
   server.listen(SCP_PORT);
   console.log(`[SCP] Listening on port ${SCP_PORT} | AE Title: ${AE_TITLE}`);
 };
 
-start().catch((err) => {
-  console.error("[SCP] Fatal startup error:", err);
+start().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error("[SCP] Fatal startup error:", msg);
   process.exit(1);
 });
