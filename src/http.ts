@@ -1,10 +1,14 @@
 import * as http from "http";
 import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { registerPendingMove } from "./lib/pendingMoves";
+import { getRemoteStudy } from "./handlers/cget-scu";
 
 const { CFindRequest } = requests;
-const { CFindResponse } = responses;
+const { CFindResponse, CMoveResponse } = responses;
 const { Status } = constants;
+
+type CFindResponseType = InstanceType<typeof CFindResponse>;
+type CMoveResponseType = InstanceType<typeof CMoveResponse>;
 
 const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? "3001", 10);
 const SCP_AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
@@ -16,9 +20,9 @@ const executeCFind = (
   port: number,
   calledAeTitle: string,
   filters: Record<string, string>,
-): Promise<Record<string, any>[]> => {
+): Promise<Record<string, unknown>[]> => {
   return new Promise((resolve, reject) => {
-    const results: Record<string, any>[] = [];
+    const results: Record<string, unknown>[] = [];
     const client = new Client();
 
     const request = CFindRequest.createStudyFindRequest({
@@ -30,7 +34,7 @@ const executeCFind = (
       StudyInstanceUID: filters.studyInstanceUID ?? "",
     });
 
-    request.on("response", (response: InstanceType<typeof CFindResponse>) => {
+    request.on("response", (response: CFindResponseType) => {
       const status = response.getStatus();
 
       if (status === Status.Pending && response.hasDataset()) {
@@ -63,7 +67,6 @@ const executeCFind = (
     client.addRequest(request);
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
-    // Safety timeout — resolve whatever we have
     setTimeout(() => resolve(results), 30_000);
   });
 };
@@ -79,14 +82,12 @@ const executeCMove = (
   return new Promise((resolve, reject) => {
     const client = new Client();
 
-    // SCP_AE_TITLE is always the move destination — the SCP resolves the actual
-    // route internally via ae_route (mirrors cmove.ts behaviour)
     const request = requests.CMoveRequest.createStudyMoveRequest(SCP_AE_TITLE, studyInstanceUID);
 
     let completed = 0;
     let failed = 0;
 
-    request.on("response", (response: any) => {
+    request.on("response", (response: CMoveResponseType) => {
       completed = response.getCompleted() ?? completed;
       failed = response.getFailures() ?? failed;
 
@@ -105,28 +106,42 @@ const executeCMove = (
     client.addRequest(request);
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
-    // Safety timeout
     setTimeout(() => resolve({ completed, failed }), 120_000);
   });
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const extractPatientName = (val: any): string => {
-  if (!val) return "";
-  if (typeof val === "string") return val.trim();
-  if (val.Alphabetic) return String(val.Alphabetic).trim();
-  if (Array.isArray(val) && val[0]?.Alphabetic) return String(val[0].Alphabetic).trim();
+const extractPatientName = (val: unknown): string => {
+  if (!val) {
+    return "";
+  }
+  if (typeof val === "string") {
+    return val.trim();
+  }
+  if (typeof val === "object" && val !== null) {
+    if ("Alphabetic" in val) {
+      return String((val as Record<string, unknown>).Alphabetic).trim();
+    }
+    if (Array.isArray(val) && val[0]?.Alphabetic) {
+      return String(val[0].Alphabetic).trim();
+    }
+  }
   return String(val).trim();
 };
 
-const parseBody = (req: http.IncomingMessage): Promise<any> => {
+const parseBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> => {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       try {
-        resolve(JSON.parse(body || "{}"));
+        const parsed = JSON.parse(body || "{}");
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          reject(new Error("Invalid JSON: expected an object"));
+        } else {
+          resolve(parsed as Record<string, unknown>);
+        }
       } catch {
         reject(new Error("Invalid JSON"));
       }
@@ -134,7 +149,7 @@ const parseBody = (req: http.IncomingMessage): Promise<any> => {
   });
 };
 
-const send = (res: http.ServerResponse, status: number, data: unknown) => {
+const send = (res: http.ServerResponse, status: number, data: unknown): void => {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
@@ -142,83 +157,150 @@ const send = (res: http.ServerResponse, status: number, data: unknown) => {
   res.end(JSON.stringify(data));
 };
 
+const getString = (val: unknown): string | undefined => (typeof val === "string" ? val : undefined);
+
+const getNumber = (val: unknown): number | undefined =>
+  typeof val === "number" ? val : typeof val === "string" ? parseInt(val, 10) : undefined;
+
+// ─── Request Handler ──────────────────────────────────────────────────────────
+
+const handleRequest = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> => {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "*",
+    });
+    res.end();
+    return;
+  }
+
+  const url = req.url ?? "";
+
+  // ── GET /health ─────────────────────────────────────────────────────────────
+  if (req.method === "GET" && url === "/health") {
+    send(res, 200, { status: "ok", port: HTTP_PORT });
+    return;
+  }
+
+  // ── POST /find ──────────────────────────────────────────────────────────────
+  if (req.method === "POST" && url === "/find") {
+    try {
+      const body = await parseBody(req);
+      const host = getString(body.host);
+      const port = getNumber(body.port);
+      const aeTitle = getString(body.aeTitle);
+      const filters = (body.filters ?? {}) as Record<string, string>;
+
+      if (!host || !port || !aeTitle) {
+        send(res, 400, { error: "host, port and aeTitle are required" });
+        return;
+      }
+
+      console.log(`[HTTP] C-FIND → ${aeTitle} @ ${host}:${port}`);
+      const results = await executeCFind(host, port, aeTitle, filters);
+      console.log(`[HTTP] C-FIND returned ${results.length} result(s)`);
+      send(res, 200, { results });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("[HTTP] /find error:", message);
+      send(res, 500, { error: message });
+    }
+    return;
+  }
+
+  // ── POST /move ──────────────────────────────────────────────────────────────
+  if (req.method === "POST" && url === "/move") {
+    try {
+      const body = await parseBody(req);
+      const host = getString(body.host);
+      const port = getNumber(body.port);
+      const aeTitle = getString(body.aeTitle);
+      const studyInstanceUID = getString(body.studyInstanceUID);
+      const hospitalId = getString(body.hospitalId);
+
+      if (!host || !port || !aeTitle || !studyInstanceUID) {
+        send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
+        return;
+      }
+
+      if (hospitalId) {
+        registerPendingMove(aeTitle, hospitalId);
+      }
+
+      console.log(
+        `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${SCP_AE_TITLE}`,
+      );
+
+      const result = await executeCMove(host, port, aeTitle, studyInstanceUID);
+      console.log(`[HTTP] C-MOVE done — completed: ${result.completed}, failed: ${result.failed}`);
+      send(res, 200, result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("[HTTP] /move error:", message);
+      send(res, 500, { error: message });
+    }
+    return;
+  }
+
+  // ── POST /get ───────────────────────────────────────────────────────────────
+  // Body: { host, port, aeTitle, studyInstanceUID, hospitalId, queryLevel?, seriesInstanceUID?, sopInstanceUID? }
+  if (req.method === "POST" && url === "/get") {
+    try {
+      const body = await parseBody(req);
+      const host = getString(body.host);
+      const port = getNumber(body.port);
+      const aeTitle = getString(body.aeTitle);
+      const studyInstanceUID = getString(body.studyInstanceUID);
+      const hospitalId = getString(body.hospitalId);
+      const queryLevel = getString(body.queryLevel) as "STUDY" | "SERIES" | "IMAGE" | undefined;
+      const seriesInstanceUID = getString(body.seriesInstanceUID);
+      const sopInstanceUID = getString(body.sopInstanceUID);
+
+      if (!host || !port || !aeTitle || !studyInstanceUID || !hospitalId) {
+        send(res, 400, {
+          error: "host, port, aeTitle, studyInstanceUID and hospitalId are required",
+        });
+        return;
+      }
+
+      console.log(`[HTTP] C-GET → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID}`);
+
+      const result = await getRemoteStudy({
+        host,
+        port,
+        callingAeTitle: SCP_AE_TITLE,
+        calledAeTitle: aeTitle,
+        studyInstanceUID,
+        hospitalId,
+        queryLevel,
+        seriesInstanceUID,
+        sopInstanceUID,
+      });
+
+      console.log(`[HTTP] C-GET done — completed: ${result.completed}, failed: ${result.failed}`);
+      send(res, 200, result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("[HTTP] /get error:", message);
+      send(res, 500, { error: message });
+    }
+    return;
+  }
+
+  send(res, 404, { error: "Not found" });
+};
+
 // ─── HTTP Server ──────────────────────────────────────────────────────────────
 
 export const startHttpServer = (): void => {
-  const server = http.createServer(async (req, res) => {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "*",
-      });
-      res.end();
-      return;
-    }
-
-    const url = req.url ?? "";
-
-    // ── GET /health ───────────────────────────────────────────────────────────
-    if (req.method === "GET" && url === "/health") {
-      send(res, 200, { status: "ok", port: HTTP_PORT });
-      return;
-    }
-
-    // ── POST /find ────────────────────────────────────────────────────────────
-    // Body: { host, port, aeTitle, filters?: { patientName, patientId, studyDate, modality, ... } }
-    if (req.method === "POST" && url === "/find") {
-      try {
-        const body = await parseBody(req);
-        const { host, port, aeTitle, filters = {} } = body;
-
-        if (!host || !port || !aeTitle) {
-          send(res, 400, { error: "host, port and aeTitle are required" });
-          return;
-        }
-
-        console.log(`[HTTP] C-FIND → ${aeTitle} @ ${host}:${port}`);
-        const results = await executeCFind(host, port, aeTitle, filters);
-        console.log(`[HTTP] C-FIND returned ${results.length} result(s)`);
-        send(res, 200, { results });
-      } catch (err: any) {
-        console.error("[HTTP] /find error:", err.message);
-        send(res, 500, { error: err.message });
-      }
-      return;
-    }
-
-    // ── POST /move ────────────────────────────────────────────────────────────
-    // Body: { host, port, aeTitle, studyInstanceUID }
-    // The move destination is always SCP_AE_TITLE — route resolution happens
-    // inside the SCP's handleCMove via the ae_route table (see cmove.ts)
-    if (req.method === "POST" && url === "/move") {
-      try {
-        const body = await parseBody(req);
-        const { host, port, aeTitle, studyInstanceUID, hospitalId } = body;
-
-        if (!host || !port || !aeTitle || !studyInstanceUID) {
-          send(res, 400, { error: "host, port, aeTitle and studyInstanceUID are required" });
-          return;
-        }
-
-        registerPendingMove(aeTitle, hospitalId);
-
-        console.log(
-          `[HTTP] C-MOVE → ${aeTitle} @ ${host}:${port} | Study: ${studyInstanceUID} → ${SCP_AE_TITLE}`,
-        );
-
-        const result = await executeCMove(host, port, aeTitle, studyInstanceUID);
-        console.log(
-          `[HTTP] C-MOVE done — completed: ${result.completed}, failed: ${result.failed}`,
-        );
-        send(res, 200, result);
-      } catch (err: any) {
-        console.error("[HTTP] /move error:", err.message);
-        send(res, 500, { error: err.message });
-      }
-      return;
-    }
-
-    send(res, 404, { error: "Not found" });
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("[HTTP] Unhandled error:", message);
+    });
   });
 
   server.listen(HTTP_PORT, () => {
