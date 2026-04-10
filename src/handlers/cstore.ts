@@ -117,8 +117,6 @@ export const handleCStore = async (
   let hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
-    // Check if this is Orthanc (or any ae_route destination) calling back
-    // as part of a C-MOVE operation initiated by us.
     const hospitalId = resolveHospitalFromPendingMove(callingAeTitle);
 
     if (!hospitalId) {
@@ -151,7 +149,6 @@ export const handleCStore = async (
     const elements = rawDataset.getElements();
     const transferSyntaxUid = rawDataset.getTransferSyntaxUid();
 
-    // Replicate toFile() internals to get buffer without writing to disk
     const denaturalizedMeta = dcmjsData.DicomMetaDictionary.denaturalizeDataset({
       FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
       MediaStorageSOPClassUID: elements.SOPClassUID ?? "1.2.840.10008.5.1.4.1.1.7",
@@ -271,7 +268,17 @@ export const handleCStore = async (
       ip_address: remoteAddress,
     });
   } else {
-    // Subsequent instance — append to instances array and increment counter
+    // Subsequent instance — check for duplicate first
+    const { data: isDuplicate } = await supabase.rpc("instance_exists", {
+      study_id: existingStudy.id,
+      sop_uid: sopInstanceUID,
+    });
+
+    if (isDuplicate) {
+      console.log(`[C-STORE] Skipping duplicate ${sopInstanceUID}`);
+      return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
+    }
+
     const newReceivedInstances = existingStudy.received_instances + 1;
     const isComplete =
       existingStudy.total_instances > 0 && newReceivedInstances >= existingStudy.total_instances;

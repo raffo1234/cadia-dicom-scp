@@ -1,4 +1,4 @@
-import { Client, requests, responses, constants, Dataset } from "dcmjs-dimse";
+import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { supabase } from "./supabase";
 import { getRemoteStudy } from "../handlers/cget-scu";
 
@@ -31,13 +31,11 @@ const cfindStudies = (
   return new Promise((resolve, reject) => {
     const results: RemoteStudy[] = [];
 
-    const dataset = new Dataset({
+    const request = CFindRequest.createStudyFindRequest({
       QueryRetrieveLevel: "STUDY",
       StudyInstanceUID: "",
       StudyDate: dateRange,
     });
-
-    const request = CFindRequest.createStudyFindRequest(dataset);
 
     request.on("response", (response: CFindResponseType) => {
       const status = response.getStatus();
@@ -45,7 +43,9 @@ const cfindStudies = (
       if (status === Status.Pending) {
         const ds = response.getDataset();
         if (!ds) return;
-        const uid = ds.getString("StudyInstanceUID");
+        const elements = ds.getElements() as Record<string, unknown>;
+        const uid =
+          typeof elements.StudyInstanceUID === "string" ? elements.StudyInstanceUID : undefined;
         if (uid) {
           results.push({ studyInstanceUID: uid });
         }

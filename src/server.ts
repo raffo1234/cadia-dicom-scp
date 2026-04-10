@@ -15,7 +15,6 @@ const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest } = requests;
 const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
 
 type AssociationType = InstanceType<typeof association.Association>;
-type PresentationContextType = InstanceType<typeof association.PresentationContext>;
 
 type CEchoRequestType = InstanceType<typeof CEchoRequest>;
 type CStoreRequestType = InstanceType<typeof CStoreRequest>;
@@ -33,11 +32,11 @@ const SCP_PORT = parseInt(process.env.SCP_PORT ?? "104", 10);
 const AE_TITLE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
 
 const toQueryLevel = (raw: unknown): QueryLevel => {
-  if (typeof raw !== "string") {
-    return "STUDY";
-  }
-  const s = raw.trim().toUpperCase();
-  return s === "SERIES" || s === "IMAGE" ? (s as QueryLevel) : "STUDY";
+  const s = String(raw ?? "STUDY")
+    .trim()
+    .toUpperCase();
+  if (s === "SERIES" || s === "IMAGE") return s;
+  return "STUDY";
 };
 
 class CadiaScp extends Scp {
@@ -62,36 +61,38 @@ class CadiaScp extends Scp {
     console.log(`[Association] ${callingAeTitle} → ${calledAeTitle} from ${this.remoteAddress}`);
 
     const contexts = assoc.getPresentationContexts();
-    contexts.forEach((c: PresentationContextType) => {
-      const context = assoc.getPresentationContext(c.id);
-      const abstractSyntax = context.getAbstractSyntaxUid();
-      const transferSyntaxes = context.getTransferSyntaxUids();
+    contexts.forEach(
+      (c: { id: number; context: InstanceType<typeof association.PresentationContext> }) => {
+        const context = assoc.getPresentationContext(c.id);
+        const abstractSyntax = context.getAbstractSyntaxUid();
+        const transferSyntaxes = context.getTransferSyntaxUids();
 
-      const isVerification = abstractSyntax === SopClass.Verification;
-      const isStorage = Object.values(StorageClass).includes(abstractSyntax);
-      const isQueryRetrieve =
-        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind ||
-        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelMove ||
-        abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelGet;
+        const isVerification = abstractSyntax === SopClass.Verification;
+        const isStorage = Object.values(StorageClass).includes(abstractSyntax);
+        const isQueryRetrieve =
+          abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelFind ||
+          abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelMove ||
+          abstractSyntax === SopClass.StudyRootQueryRetrieveInformationModelGet;
 
-      if (isVerification || isStorage || isQueryRetrieve) {
-        let accepted = false;
-        transferSyntaxes.forEach((ts: string) => {
-          if (
-            ts === TransferSyntax.ImplicitVRLittleEndian ||
-            ts === TransferSyntax.ExplicitVRLittleEndian
-          ) {
-            context.setResult(PresentationContextResult.Accept, ts);
-            accepted = true;
+        if (isVerification || isStorage || isQueryRetrieve) {
+          let accepted = false;
+          transferSyntaxes.forEach((ts: string) => {
+            if (
+              ts === TransferSyntax.ImplicitVRLittleEndian ||
+              ts === TransferSyntax.ExplicitVRLittleEndian
+            ) {
+              context.setResult(PresentationContextResult.Accept, ts);
+              accepted = true;
+            }
+          });
+          if (!accepted) {
+            context.setResult(PresentationContextResult.RejectTransferSyntaxesNotSupported);
           }
-        });
-        if (!accepted) {
-          context.setResult(PresentationContextResult.RejectTransferSyntaxesNotSupported);
+        } else {
+          context.setResult(PresentationContextResult.RejectAbstractSyntaxNotSupported);
         }
-      } else {
-        context.setResult(PresentationContextResult.RejectAbstractSyntaxNotSupported);
-      }
-    });
+      },
+    );
 
     this.sendAssociationAccept();
   }
