@@ -29,18 +29,23 @@ const executeCFind = (
       PatientName: filters.patientName ?? "",
       PatientID: filters.patientId ?? "",
       StudyDate: filters.studyDate ?? "",
+      StudyTime: "",
       Modality: filters.modality ?? "",
       StudyDescription: filters.studyDescription ?? "",
       StudyInstanceUID: filters.studyInstanceUID ?? "",
+      NumberOfStudyRelatedInstances: "",
     });
 
     request.on("response", (response: CFindResponseType) => {
       const status = response.getStatus();
+      console.log(`[C-FIND] Response status: 0x${status.toString(16).toUpperCase()}`); // 👈
+      console.log(`[C-FIND] Has dataset: ${response.hasDataset()}`); // 👈
 
       if (status === Status.Pending && response.hasDataset()) {
         const ds = response.getDataset();
         if (ds) {
           const elements = ds.getElements();
+          console.log(`[C-FIND] Elements:`, JSON.stringify(elements).slice(0, 200)); // 👈
           results.push({
             StudyInstanceUID: elements.StudyInstanceUID ?? "",
             PatientName: extractPatientName(elements.PatientName),
@@ -56,6 +61,7 @@ const executeCFind = (
       }
 
       if (status === Status.Success) {
+        console.log(`[C-FIND] Done — ${results.length} result(s)`); // 👈
         resolve(results);
       }
     });
@@ -67,7 +73,10 @@ const executeCFind = (
     client.addRequest(request);
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
-    setTimeout(() => resolve(results), 30_000);
+    setTimeout(() => {
+      console.log(`[C-FIND] Timeout — ${results.length} result(s)`); // 👈
+      resolve(results);
+    }, 60_000);
   });
 };
 

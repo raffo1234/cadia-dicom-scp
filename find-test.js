@@ -1,4 +1,5 @@
-const { getRemoteStudy } = require("./src/handlers/cget-scu");
+require("dotenv").config();
+const { getRemoteStudy } = require("./dist/handlers/cget-scu");
 
 getRemoteStudy({
   host: "170.0.83.100",

@@ -5,7 +5,6 @@ import { hospitalRegistry } from "../lib/hospitalRegistry";
 import { uploadToR2 } from "../lib/r2";
 import { supabase } from "../lib/supabase";
 import { DicomInstanceInsert, HospitalAccess } from "../types";
-import { resolveHospitalFromPendingMove } from "../lib/pendingMoves";
 
 /**
  * Naturalized dcmjs datasets return plain values (strings, numbers, arrays)
@@ -16,7 +15,6 @@ const tag = (dataset: Record<string, any>, key: string): string | undefined => {
   if (val === undefined || val === null) return undefined;
   if (typeof val === "string") return val.trim() || undefined;
   if (typeof val === "number") return String(val);
-  // DICOM Person Name — { Alphabetic: "DOE^JOHN" }
   if (typeof val === "object" && !Array.isArray(val) && val.Alphabetic !== undefined) {
     return String(val.Alphabetic).trim() || undefined;
   }
@@ -113,24 +111,31 @@ export const handleCStore = async (
   studyInstanceUID?: string;
   hospitalId?: string;
 }> => {
-  // 1. Validate AE title
+  // 1. Validate AE title — first check hospitalRegistry, then ae_route in DB
   let hospital = await hospitalRegistry.findByAeTitle(callingAeTitle);
 
   if (!hospital) {
-    const hospitalId = resolveHospitalFromPendingMove(callingAeTitle);
+    // Fallback: resolve by ae_title in ae_route (handles C-MOVE callbacks
+    // from external PACS across multiple Fly.io instances)
+    const { data: route } = await supabase
+      .from("ae_route")
+      .select("hospital_id")
+      .eq("ae_title", callingAeTitle)
+      .eq("is_active", true)
+      .maybeSingle();
 
-    if (!hospitalId) {
+    if (!route) {
       console.warn(`[C-STORE] Rejected unknown AE title: ${callingAeTitle}`);
       return { success: false, reason: "Unknown or inactive AE title" };
     }
 
     console.log(
-      `[C-STORE] C-MOVE callback from ${callingAeTitle} → resolving hospital ${hospitalId}`,
+      `[C-STORE] C-MOVE callback from ${callingAeTitle} → resolving hospital via ae_route`,
     );
-    hospital = await resolveHospitalById(hospitalId);
+    hospital = await resolveHospitalById(route.hospital_id);
 
     if (!hospital) {
-      console.warn(`[C-STORE] Could not resolve hospital ${hospitalId} for C-MOVE callback`);
+      console.warn(`[C-STORE] Could not resolve hospital for ${callingAeTitle}`);
       return { success: false, reason: "Could not resolve hospital" };
     }
   }
@@ -231,7 +236,6 @@ export const handleCStore = async (
     .maybeSingle();
 
   if (!existingStudy) {
-    // First instance of this study — create the study record
     const { data: newStudy, error: insertError } = await supabase
       .from("dicom_study")
       .insert({
@@ -259,7 +263,6 @@ export const handleCStore = async (
       return { success: false, reason: "Failed to save study metadata" };
     }
 
-    // Audit log
     await supabase.from("dicom_audit_log").insert({
       study_id: newStudy.id,
       hospital_id: hospital.hospital_id,
@@ -268,7 +271,6 @@ export const handleCStore = async (
       ip_address: remoteAddress,
     });
   } else {
-    // Subsequent instance — check for duplicate first
     const { data: isDuplicate } = await supabase.rpc("instance_exists", {
       study_id: existingStudy.id,
       sop_uid: sopInstanceUID,
@@ -283,7 +285,6 @@ export const handleCStore = async (
     const isComplete =
       existingStudy.total_instances > 0 && newReceivedInstances >= existingStudy.total_instances;
 
-    // Append instance to jsonb array atomically via rpc
     const { error: appendError } = await supabase.rpc("append_dicom_instance", {
       study_id: existingStudy.id,
       instance: instance,
