@@ -1,6 +1,8 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y dcmtk && rm -rf /var/lib/apt/lists/*
 
 COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile
