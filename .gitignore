@@ -4,3 +4,4 @@ dist/
 .env.local
 *.log
 .DS_Storenode_modules/
+src/.DS_Store
