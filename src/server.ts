@@ -8,7 +8,7 @@ import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 import { startHttpServer } from "./http";
-import { startSyncJob } from "./lib/syncJob";
+// import { startSyncJob } from "./lib/syncJob";
 
 const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
 const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest } = requests;
@@ -237,7 +237,7 @@ const start = async (): Promise<void> => {
 
   await hospitalRegistry.init();
   startCompletionWatchdog();
-  startSyncJob();
+  // startSyncJob();
   startHttpServer();
 
   const server = new Server(CadiaScp);
