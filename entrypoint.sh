@@ -8,4 +8,4 @@ proxy_dns
 socks5 ${RESOLVED} ${PROXY_PORT}
 CONF
 cat /etc/proxychains4.conf
-exec node dist/server.js
+exec proxychains4 node dist/server.js
