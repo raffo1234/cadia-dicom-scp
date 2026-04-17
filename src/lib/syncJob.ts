@@ -138,6 +138,8 @@ const syncHospital = async (route: AeRoute, localAeTitle: string): Promise<void>
 const runSync = async (): Promise<void> => {
   console.log("[SyncJob] Starting sync run...");
 
+  const localAeTitle = process.env.SCP_AE_TITLE ?? "CADIA.PE";
+
   const { data: routes, error: routeErr } = await supabase
     .from("ae_route")
     .select("ae_title, host, port, hospital_id")
@@ -148,28 +150,7 @@ const runSync = async (): Promise<void> => {
     return;
   }
 
-  const { data: accesses, error: accessErr } = await supabase
-    .from("hospital_access")
-    .select("ae_title, hospital_id")
-    .eq("is_active", true);
-
-  if (accessErr) {
-    console.error("[SyncJob] Failed to load hospital_access:", accessErr.message);
-    return;
-  }
-
-  const localAeByHospital = new Map<string, string>(
-    (accesses ?? []).map((a) => [a.hospital_id as string, a.ae_title as string]),
-  );
-
   for (const route of routes ?? []) {
-    const localAeTitle = localAeByHospital.get(route.hospital_id);
-    if (!localAeTitle) {
-      console.warn(
-        `[SyncJob] No active hospital_access for hospital_id ${route.hospital_id}, skipping ${route.ae_title}`,
-      );
-      continue;
-    }
     await syncHospital(route as AeRoute, localAeTitle);
   }
 
