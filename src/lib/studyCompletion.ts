@@ -8,7 +8,9 @@ export const completeStudiesForAssociation = async (
   studyInstanceUIDs: string[],
   hospitalId: string,
 ): Promise<void> => {
-  if (studyInstanceUIDs.length === 0) return;
+  if (studyInstanceUIDs.length === 0) {
+    return;
+  }
 
   const { error } = await supabase
     .from("dicom_study")
@@ -26,6 +28,27 @@ export const completeStudiesForAssociation = async (
     console.log(
       `[StudyCompletion] Marked ${studyInstanceUIDs.length} study/studies as complete (association release)`,
     );
+  }
+};
+
+/**
+ * Mark a single study as complete by StudyInstanceUID only.
+ * Used by C-GET SCU where hospitalId may not match what handleCStore resolved.
+ */
+export const completeStudyByUID = async (studyInstanceUID: string): Promise<void> => {
+  const { error } = await supabase
+    .from("dicom_study")
+    .update({
+      receive_status: "complete",
+      completed_at: new Date().toISOString(),
+    })
+    .eq("study_instance_uid", studyInstanceUID)
+    .eq("receive_status", "receiving");
+
+  if (error) {
+    console.error("[StudyCompletion] Failed to complete study:", error.message);
+  } else {
+    console.log(`[StudyCompletion] Marked ${studyInstanceUID} as complete`);
   }
 };
 
@@ -64,9 +87,10 @@ export const startCompletionWatchdog = (): void => {
     }
   };
 
-  // Run immediately on startup to catch any studies left from a previous crash
-  run();
+  void run();
 
-  setInterval(run, INTERVAL_MS);
+  setInterval(() => {
+    void run();
+  }, INTERVAL_MS);
   console.log("[Watchdog] Study completion watchdog started (every 5 min, stale after 10 min)");
 };

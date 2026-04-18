@@ -1,7 +1,7 @@
 import { Client, requests, responses, constants, Dataset } from "dcmjs-dimse";
 import { handleCStore } from "./cstore";
 import { registerPendingMove, clearPendingMove } from "../lib/pendingMoves";
-import { completeStudiesForAssociation } from "../lib/studyCompletion";
+import { completeStudyByUID } from "../lib/studyCompletion";
 
 const { CGetRequest } = requests;
 const { CStoreResponse } = responses;
@@ -83,7 +83,7 @@ const attempt = (opts: CGetOptions): Promise<CGetResult> => {
         result.completed = response.getCompleted();
         result.failed = response.getFailures();
         console.log(`[C-GET SCU] Done — completed: ${result.completed}, failed: ${result.failed}`);
-        await completeStudiesForAssociation([studyInstanceUID], hospitalId);
+        await completeStudyByUID(studyInstanceUID);
         clearPendingMove(calledAeTitle);
         resolve(result);
       } else {
@@ -134,7 +134,7 @@ export const getRemoteStudy = async (opts: CGetOptions): Promise<CGetResult> => 
 
   for (let i = 0; i <= maxRetries; i++) {
     if (i > 0) {
-      const delayMs = Math.pow(2, i) * 1000; // 2s, 4s, 8s, 16s, 32s
+      const delayMs = Math.pow(2, i) * 1000;
       console.log(`[C-GET SCU] Retry ${i}/${maxRetries} in ${delayMs / 1000}s...`);
       await sleep(delayMs);
     }
