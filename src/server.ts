@@ -1,5 +1,8 @@
+import { setDefaultResultOrder } from "dns";
+setDefaultResultOrder("ipv4first");
+
 import "dotenv/config";
-import { Socket } from "net";
+import type { Socket } from "net";
 import { Server, Scp, requests, responses, constants, Dataset, association } from "dcmjs-dimse";
 import { hospitalRegistry } from "./lib/hospitalRegistry";
 import { handleCEcho } from "./handlers/cecho";
