@@ -5,10 +5,10 @@
 # ==============================================
 
 # --- CONFIGURACIÓN ---
-SCP_IP="${1:-192.168.1.100}"
-SCP_PORT="${2:-4242}"
-CALLING_AET="SENDER"
-CALLED_AET="STORE_SCP"
+SCP_IP="${1:-137.66.1.186}"
+SCP_PORT="${2:-11112}"
+CALLING_AET="MAGNETON"
+CALLED_AET="CADIA.PE"
 
 # --- SELECCIÓN DE ARCHIVO ---
 echo ""
