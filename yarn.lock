@@ -1393,14 +1393,14 @@ arg@^4.1.0:
 
 async-event-emitter2@^0.0.2:
   version "0.0.2"
-  resolved "https://registry.npmjs.org/async-event-emitter2/-/async-event-emitter2-0.0.2.tgz"
+  resolved "https://registry.yarnpkg.com/async-event-emitter2/-/async-event-emitter2-0.0.2.tgz#fc430b7ee5ef2e39318c7c3f62d224166faac22c"
   integrity sha512-STaByrQCwDlQEb1stntYzVYzaS3zA02+3OMm6Ah6hjUWhmmthS0aJaD5t9GGQ/Q8H9vHl8O11PUm9s+z3bNUdQ==
   dependencies:
     async "^3.2.6"
 
 async@^3.2.6:
   version "3.2.6"
-  resolved "https://registry.npmjs.org/async/-/async-3.2.6.tgz"
+  resolved "https://registry.yarnpkg.com/async/-/async-3.2.6.tgz#1b0728e14929d51b85b449b7f06e27c1145e38ce"
   integrity sha512-htCUDlxyyCLMgaM3xXg0C0LW2xqfuQ6p05pCEIsXuyQ+a1koYKTuBMzRNwmybfLgvJDMd0r1LTn4+E0Ti6C2AA==
 
 balanced-match@^4.0.2:
@@ -1439,41 +1439,28 @@ cross-spawn@^7.0.6:
     shebang-command "^2.0.0"
     which "^2.0.1"
 
-dcmjs-codecs@^0.0.7:
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/dcmjs-codecs/-/dcmjs-codecs-0.0.7.tgz"
-  integrity sha512-mOcidDag6v2JbitPfZdcVdruwM2dPx/Ywx+D1zfqHSW7gNZA29zfDnjJHF5TqLPnWWhhFwGZiUaEfqHDmu3Z/w==
+dcmjs-codecs@^0.0.8:
+  version "0.0.8"
+  resolved "https://registry.yarnpkg.com/dcmjs-codecs/-/dcmjs-codecs-0.0.8.tgz#88fb6b539d46e057e10dfe748fbad67943bc6c0c"
+  integrity sha512-qYilc+kqqpLYha6wytkIjzqsiByg7ol3KbONcJMcN7yG6G3FJOJo2s0PqtaCMM4sw9Ilcr9IyPgkKWW+tfuKQA==
   dependencies:
-    dcmjs "^0.40.0"
+    dcmjs "^0.50.1"
     loglevel "^1.9.2"
     loglevel-plugin-prefix "^0.8.4"
 
-dcmjs-dimse@^0.3.2:
-  version "0.3.2"
-  resolved "https://registry.npmjs.org/dcmjs-dimse/-/dcmjs-dimse-0.3.2.tgz"
-  integrity sha512-h/0RqH94Vl+rcnGKtphlawhNIPNpy70SWrV3V0WHOqtX+JarsWTLsuaF/e4hnPwM6gxAZru35krEfGJcht/7bw==
+dcmjs-dimse@^0.3.3:
+  version "0.3.3"
+  resolved "https://registry.yarnpkg.com/dcmjs-dimse/-/dcmjs-dimse-0.3.3.tgz#d73130c784bfe621a8c7ee97e878548ef501baba"
+  integrity sha512-u2MpnnydfQ3lZa25Y5UMqUBLRPoKM53SPJdQwvWe6TYJC/3fxgWfV55vJIoS6rN+hKPxVj87TOyM6QdUCClyzw==
   dependencies:
     async-event-emitter2 "^0.0.2"
     dcmjs "^0.50.1"
-    dcmjs-codecs "^0.0.7"
+    dcmjs-codecs "^0.0.8"
     loglevel "^1.9.2"
     loglevel-plugin-prefix "^0.8.4"
     memorystream "^0.3.1"
     smart-buffer "^4.2.0"
     ts-mixer "^6.0.4"
-
-dcmjs@^0.40.0:
-  version "0.40.0"
-  resolved "https://registry.npmjs.org/dcmjs/-/dcmjs-0.40.0.tgz"
-  integrity sha512-FId8dPpDg45ynIjpWF1mXlA77YcQBcE/eQGgkQpJqB0k9NF4simMYbSm9pJ5ORizYdDzOzjZpVNVym/vnFQJzQ==
-  dependencies:
-    "@babel/runtime-corejs3" "^7.22.5"
-    adm-zip "^0.5.10"
-    gl-matrix "^3.1.0"
-    lodash.clonedeep "^4.5.0"
-    loglevel "^1.8.1"
-    ndarray "^1.0.19"
-    pako "^2.0.4"
 
 dcmjs@^0.50.1:
   version "0.50.1"
@@ -1789,7 +1776,7 @@ lodash.clonedeep@^4.5.0:
 
 loglevel-plugin-prefix@^0.8.4:
   version "0.8.4"
-  resolved "https://registry.npmjs.org/loglevel-plugin-prefix/-/loglevel-plugin-prefix-0.8.4.tgz"
+  resolved "https://registry.yarnpkg.com/loglevel-plugin-prefix/-/loglevel-plugin-prefix-0.8.4.tgz#2fe0e05f1a820317d98d8c123e634c1bd84ff644"
   integrity sha512-WpG9CcFAOjz/FtNht+QJeGpvVl/cdR6P0z6OcXSkr8wFJOsV2GRj2j10JLfjuA4aYkcKCNIEqRGCyTife9R8/g==
 
 loglevel@^1.8.1, loglevel@^1.9.2:
@@ -1804,7 +1791,7 @@ make-error@^1.1.1:
 
 memorystream@^0.3.1:
   version "0.3.1"
-  resolved "https://registry.npmjs.org/memorystream/-/memorystream-0.3.1.tgz"
+  resolved "https://registry.yarnpkg.com/memorystream/-/memorystream-0.3.1.tgz#86d7090b30ce455d63fbae12dda51a47ddcaf9b2"
   integrity sha512-S3UwM3yj5mtUSEfP41UZmt/0SCoVYUcU1rkXv+BQ5Ig8ndL4sPoJNBUJERafdPb5jjHJGuMgytgKvKIf58XNBw==
 
 minimatch@^10.2.2, minimatch@^10.2.4:
@@ -1924,7 +1911,7 @@ shebang-regex@^3.0.0:
 
 smart-buffer@^4.2.0:
   version "4.2.0"
-  resolved "https://registry.npmjs.org/smart-buffer/-/smart-buffer-4.2.0.tgz"
+  resolved "https://registry.yarnpkg.com/smart-buffer/-/smart-buffer-4.2.0.tgz#6e1d71fa4f18c05f7d0ff216dd16a481d0e8d9ae"
   integrity sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==
 
 strnum@^2.2.0:
@@ -1954,7 +1941,7 @@ ts-api-utils@^2.5.0:
 
 ts-mixer@^6.0.4:
   version "6.0.4"
-  resolved "https://registry.npmjs.org/ts-mixer/-/ts-mixer-6.0.4.tgz"
+  resolved "https://registry.yarnpkg.com/ts-mixer/-/ts-mixer-6.0.4.tgz#1da39ceabc09d947a82140d9f09db0f84919ca28"
   integrity sha512-ufKpbmrugz5Aou4wcr5Wc1UUFWOLhq+Fm6qa6P0w0K5Qw2yhaUoiWszhCVuNQyNwrlGiscHOmqYoAox1PtvgjA==
 
 ts-node@^10.9.2:

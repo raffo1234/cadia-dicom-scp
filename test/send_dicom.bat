@@ -4,7 +4,7 @@
 :: Requiere: DCMTK para Windows
 :: Descarga: https://dcmtk.org/dcmtk.php.en
 :: ==============================================
-
+    
 set SCP_IP=137.66.1.186
 set SCP_PORT=11112
 set CALLING_AET=MAGNETON

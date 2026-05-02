@@ -18,7 +18,7 @@
     "@aws-sdk/client-s3": "^3.1021.0",
     "@supabase/supabase-js": "^2.101.1",
     "dcmjs": "^0.50.1",
-    "dcmjs-dimse": "^0.3.2",
+    "dcmjs-dimse": "^0.3.3",
     "dotenv": "^17.3.1"
   },
   "devDependencies": {
