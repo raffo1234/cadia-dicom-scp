@@ -14,6 +14,17 @@ type StudyRow = {
 };
 
 /**
+ * Normalizes a DICOM query field value to a string, or null if empty/absent.
+ * DICOM libraries may send fields as empty strings, empty arrays, or undefined.
+ */
+const asString = (v: any): string | null => {
+  if (v === null || v === undefined) return null;
+  if (Array.isArray(v)) return v.length > 0 ? String(v[0]) : null;
+  if (typeof v === "string") return v.length > 0 ? v : null;
+  return String(v);
+};
+
+/**
  * C-FIND — DICOM query handler
  * Called when a modality or PACS queries for studies/series/instances.
  * Supports Study and Series level queries.
@@ -78,22 +89,21 @@ const handleStudyLevelFind = async (
     .eq("hospital_id", hospitalId)
     .eq("receive_status", "complete");
 
-  // Apply wildcard-aware filters for standard Study-level attributes
-  if (query.StudyInstanceUID) {
-    q = q.eq("study_instance_uid", query.StudyInstanceUID);
-  }
-  if (query.PatientID) {
-    q = applyWildcard(q, "patient_id", query.PatientID);
-  }
-  if (query.PatientName) {
-    q = applyWildcard(q, "patient_name", query.PatientName);
-  }
-  if (query.StudyDate) {
-    q = applyDateRange(q, "study_date", query.StudyDate);
-  }
-  if (query.Modality) {
-    q = q.eq("modality", query.Modality);
-  }
+  // Normalize and apply filters — DICOM fields may arrive as arrays, empty strings, or undefined
+  const studyInstanceUID = asString(query.StudyInstanceUID);
+  if (studyInstanceUID) q = q.eq("study_instance_uid", studyInstanceUID);
+
+  const patientID = asString(query.PatientID);
+  if (patientID) q = applyWildcard(q, "patient_id", patientID);
+
+  const patientName = asString(query.PatientName);
+  if (patientName) q = applyWildcard(q, "patient_name", patientName);
+
+  const studyDate = asString(query.StudyDate);
+  if (studyDate) q = applyDateRange(q, "study_date", studyDate);
+
+  const modality = asString(query.Modality);
+  if (modality) q = q.eq("modality", modality);
 
   const { data, error } = await q.limit(200);
 
