@@ -9,12 +9,12 @@ import { handleCEcho } from "./handlers/cecho";
 import { handleCStore } from "./handlers/cstore";
 import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
+import { handleCGetScp } from "./handlers/cget-scp";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 import { startHttpServer } from "./http";
-// import { startSyncJob } from "./lib/syncJob";
 
-const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse } = responses;
-const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest } = requests;
+const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse, CGetResponse } = responses;
+const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest, CGetRequest } = requests;
 const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
 
 type AssociationType = InstanceType<typeof association.Association>;
@@ -23,11 +23,13 @@ type CEchoRequestType = InstanceType<typeof CEchoRequest>;
 type CStoreRequestType = InstanceType<typeof CStoreRequest>;
 type CFindRequestType = InstanceType<typeof CFindRequest>;
 type CMoveRequestType = InstanceType<typeof CMoveRequest>;
+type CGetRequestType = InstanceType<typeof CGetRequest>;
 
 type CEchoResponseType = InstanceType<typeof CEchoResponse>;
 type CStoreResponseType = InstanceType<typeof CStoreResponse>;
 type CFindResponseType = InstanceType<typeof CFindResponse>;
 type CMoveResponseType = InstanceType<typeof CMoveResponse>;
+type CGetResponseType = InstanceType<typeof CGetResponse>;
 
 type QueryLevel = "STUDY" | "SERIES" | "IMAGE";
 
@@ -233,6 +235,53 @@ class CadiaScp extends Scp {
         console.error("[SCP] cMoveRequest error:", msg);
       });
   }
+
+  cGetRequest(
+    request: CGetRequestType,
+    callback: (responses: CGetResponseType[]) => void,
+  ): void {
+    const callingAeTitle = this.currentAssociation?.getCallingAeTitle().trim() ?? "";
+    const calledAeTitle = this.currentAssociation?.getCalledAeTitle().trim() ?? "";
+    const elements: Record<string, unknown> = request.getDataset()?.getElements() ?? {};
+    const queryLevel = toQueryLevel(elements.QueryRetrieveLevel);
+
+    const pendingResponses: CGetResponseType[] = [];
+
+    void handleCGetScp(
+      callingAeTitle,
+      calledAeTitle,
+      this.remoteAddress,
+      elements,
+      queryLevel,
+      (completed, remaining, failed) => {
+        const pending = CGetResponse.fromRequest(request);
+        pending.setStatus(Status.Pending);
+        pending.setCompleted(completed);
+        pending.setRemaining(remaining);
+        pending.setFailures(failed);
+        pendingResponses.push(pending);
+      },
+    )
+      .then((result) => {
+        // Enviar cada instancia como C-STORE por la misma conexión
+        for (const ds of result.datasets) {
+          const storeRequest = new CStoreRequest(ds.buffer);
+          pendingResponses.push(storeRequest as any);
+        }
+
+        const final = CGetResponse.fromRequest(request);
+        final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+        final.setCompleted(result.completed);
+        final.setRemaining(0);
+        final.setFailures(result.failed);
+        pendingResponses.push(final);
+        callback(pendingResponses);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] cGetRequest error:", msg);
+      });
+  }
 }
 
 const start = async (): Promise<void> => {
@@ -240,7 +289,6 @@ const start = async (): Promise<void> => {
 
   await hospitalRegistry.init();
   startCompletionWatchdog();
-  // startSyncJob();
   startHttpServer();
 
   const server = new Server(CadiaScp);
