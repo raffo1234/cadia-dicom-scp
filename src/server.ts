@@ -265,7 +265,8 @@ class CadiaScp extends Scp {
       .then((result) => {
         // Enviar cada instancia como C-STORE por la misma conexión
         for (const ds of result.datasets) {
-          const storeRequest = new CStoreRequest(ds.buffer);
+          const dataset = (Dataset as any).fromBuffer(ds.buffer);
+          const storeRequest = new CStoreRequest(dataset);
           pendingResponses.push(storeRequest as any);
         }
 
