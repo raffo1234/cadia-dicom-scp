@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { supabase } from "../lib/supabase";
 import { downloadFromR2 } from "../lib/r2";
 
@@ -55,10 +58,7 @@ const resolveInstances = async (
   query: Record<string, any>,
   queryLevel: "STUDY" | "SERIES" | "IMAGE",
 ): Promise<DicomInstance[]> => {
-  const studyInstanceUID = query.StudyInstanceUID
-    ? String(query.StudyInstanceUID)
-    : null;
-
+  const studyInstanceUID = query.StudyInstanceUID ? String(query.StudyInstanceUID) : null;
   if (!studyInstanceUID) return [];
 
   const { data: studies, error } = await supabase
@@ -70,10 +70,9 @@ const resolveInstances = async (
 
   if (error || !studies) return [];
 
-  let instances: DicomInstance[] = [];
+  const instances: DicomInstance[] = [];
   for (const study of studies) {
     const all: DicomInstance[] = study.instances ?? [];
-
     if (queryLevel === "SERIES" && query.SeriesInstanceUID) {
       instances.push(...all.filter((i) => i.series_instance_uid === query.SeriesInstanceUID));
     } else if (queryLevel === "IMAGE" && query.SOPInstanceUID) {
@@ -89,17 +88,14 @@ const resolveInstances = async (
 const storageUrlToFolderAndKey = (storageUrl: string): { folder: string; key: string } => {
   const idx = storageUrl.indexOf("/");
   if (idx === -1) return { folder: storageUrl, key: "" };
-  return {
-    folder: storageUrl.slice(0, idx),
-    key: storageUrl.slice(idx + 1),
-  };
+  return { folder: storageUrl.slice(0, idx), key: storageUrl.slice(idx + 1) };
 };
 
 export interface CGetScpResult {
   success: boolean;
   completed: number;
   failed: number;
-  datasets: { buffer: Buffer; sopClassUid: string; sopInstanceUid: string }[];
+  tempFiles: string[];
   reason?: string;
 }
 
@@ -111,23 +107,19 @@ export const handleCGetScp = async (
   queryLevel: "STUDY" | "SERIES" | "IMAGE",
   onPending: (completed: number, remaining: number, failed: number) => void,
 ): Promise<CGetScpResult> => {
-  // 1. Validar caller
   const caller = await resolveCallerFromAeTitle(callingAeTitle);
   if (!caller) {
     console.warn(`[C-GET SCP] Rejected unknown AE title: ${callingAeTitle}`);
-    return { success: false, completed: 0, failed: 0, datasets: [], reason: "Unknown or inactive AE title" };
+    return { success: false, completed: 0, failed: 0, tempFiles: [], reason: "Unknown or inactive AE title" };
   }
 
   if (caller.allowed_ip && remoteAddress !== caller.allowed_ip) {
     console.warn(`[C-GET SCP] Rejected IP ${remoteAddress} for ${callingAeTitle}`);
-    return { success: false, completed: 0, failed: 0, datasets: [], reason: "IP not allowed" };
+    return { success: false, completed: 0, failed: 0, tempFiles: [], reason: "IP not allowed" };
   }
 
-  console.log(
-    `[C-GET SCP] ${callingAeTitle} → ${calledAeTitle} | Level: ${queryLevel} | Study: ${query.StudyInstanceUID}`,
-  );
+  console.log(`[C-GET SCP] ${callingAeTitle} → ${calledAeTitle} | Level: ${queryLevel} | Study: ${query.StudyInstanceUID}`);
 
-  // 2. Audit log
   await supabase.from("dicom_audit_log").insert({
     hospital_id: caller.hospital_id,
     action: "c-get",
@@ -135,29 +127,25 @@ export const handleCGetScp = async (
     ip_address: remoteAddress,
   });
 
-  // 3. Resolver instancias
   const instances = await resolveInstances(caller.hospital_id, query, queryLevel);
   if (instances.length === 0) {
     console.log(`[C-GET SCP] No instances found`);
-    return { success: true, completed: 0, failed: 0, datasets: [] };
+    return { success: true, completed: 0, failed: 0, tempFiles: [] };
   }
 
   console.log(`[C-GET SCP] Found ${instances.length} instance(s) to send`);
 
-  // 4. Descargar de R2
   let completed = 0;
   let failed = 0;
-  const datasets: { buffer: Buffer; sopClassUid: string; sopInstanceUid: string }[] = [];
+  const tempFiles: string[] = [];
 
   for (const inst of instances) {
     try {
       const { folder, key } = storageUrlToFolderAndKey(inst.storage_url);
       const buffer = await downloadFromR2(folder, key);
-      datasets.push({
-        buffer,
-        sopClassUid: inst.sop_class_uid,
-        sopInstanceUid: inst.sop_instance_uid,
-      });
+      const tempPath = path.join(os.tmpdir(), `cadia-cget-${inst.sop_instance_uid}.dcm`);
+      fs.writeFileSync(tempPath, buffer);
+      tempFiles.push(tempPath);
       completed++;
     } catch (err) {
       console.error(`[C-GET SCP] Failed to download ${inst.sop_instance_uid}:`, err);
@@ -168,5 +156,5 @@ export const handleCGetScp = async (
   }
 
   console.log(`[C-GET SCP] Done — completed: ${completed}, failed: ${failed}`);
-  return { success: true, completed, failed, datasets };
+  return { success: true, completed, failed, tempFiles };
 };

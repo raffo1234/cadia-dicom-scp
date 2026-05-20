@@ -1,6 +1,7 @@
 import { setDefaultResultOrder } from "dns";
 setDefaultResultOrder("ipv4first");
 
+import * as fs from "fs";
 import "dotenv/config";
 import type { Socket } from "net";
 import { Server, Scp, requests, responses, constants, Dataset, association } from "dcmjs-dimse";
@@ -263,11 +264,11 @@ class CadiaScp extends Scp {
       },
     )
       .then((result) => {
-        // Enviar cada instancia como C-STORE por la misma conexión
-        for (const ds of result.datasets) {
-          const dataset = (Dataset as any).fromBuffer(ds.buffer);
-          const storeRequest = new CStoreRequest(dataset);
-          pendingResponses.push(storeRequest as any);
+        let msgId = 1;
+        for (const tempPath of result.tempFiles) {
+          const storeRequest = new CStoreRequest(tempPath);
+          (storeRequest as unknown as { setMessageId: (id: number) => void }).setMessageId(msgId++);
+          pendingResponses.push(storeRequest as unknown as CGetResponseType);
         }
 
         const final = CGetResponse.fromRequest(request);
@@ -277,6 +278,15 @@ class CadiaScp extends Scp {
         final.setFailures(result.failed);
         pendingResponses.push(final);
         callback(pendingResponses);
+
+        // Cleanup temp files después de enviar
+        setTimeout(() => {
+          for (const f of result.tempFiles) {
+            try {
+              fs.unlinkSync(f);
+            } catch { /* ignore */ }
+          }
+        }, 10_000);
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
