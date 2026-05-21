@@ -1,7 +1,6 @@
 import { setDefaultResultOrder } from "dns";
 setDefaultResultOrder("ipv4first");
 
-import dcmjs from 'dcmjs';
 import "dotenv/config";
 import type { Socket } from "net";
 import { Server, Scp, requests, responses, constants, Dataset, association } from "dcmjs-dimse";
@@ -44,6 +43,17 @@ const toQueryLevel = (raw: unknown): QueryLevel => {
   if (s === "SERIES" || s === "IMAGE") return s;
   return "STUDY";
 };
+
+function stripP10Header(buffer: Buffer): Buffer {
+  // Verifica magic DICM en offset 128
+  if (buffer.slice(128, 132).toString('ascii') !== 'DICM') {
+    return buffer; // No es P10, retorna tal cual
+  }
+  // FileMetaInformationGroupLength está en offset 140 (4 bytes LE)
+  const metaLength = buffer.readUInt32LE(140);
+  const datasetStart = 144 + metaLength;
+  return buffer.slice(datasetStart);
+}
 
 class CadiaScp extends Scp {
   private remoteAddress: string = "";
@@ -273,37 +283,17 @@ class CadiaScp extends Scp {
       if (result.success && result.buffers.length > 0) {
         console.log(`[SCP] Procesando ${result.buffers.length} instancias en memoria...`);
 
-        // ── DEBUG: descubrir API real de dcmjs-dimse ──────────────────────
-        console.log('[DEBUG] association proto methods:',
-          Object.getOwnPropertyNames(Object.getPrototypeOf(association as any)));
-
-        const probeDataset = new Dataset({});
-        const probeStore = new CStoreRequest(probeDataset);
-        console.log('[DEBUG] CStoreRequest proto methods:',
-          Object.getOwnPropertyNames(Object.getPrototypeOf(probeStore)));
-
-        console.log('[DEBUG] this (Scp) proto methods:',
-          Object.getOwnPropertyNames(Object.getPrototypeOf(this)));
-        // ─────────────────────────────────────────────────────────────────
-
         for (const item of result.buffers) {
           try {
-            const arrayBuffer = item.buffer.buffer.slice(
-              item.buffer.byteOffset,
-              item.buffer.byteOffset + item.buffer.byteLength
-            ) as ArrayBuffer;
-
-            const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer);
-            const dataset = new Dataset(dicomData.dict);
-
+            const dataset = new Dataset({});
             dataset.setElement("SOPClassUID", item.sopClassUid);
             dataset.setElement("SOPInstanceUID", item.sopInstanceUid);
+            dataset.setTransferSyntaxUid(TransferSyntax.ExplicitVRLittleEndian);
 
-            const dict = dicomData.dict as Record<string, { Value?: unknown[] }>;
-            const transferSyntaxUid =
-              (dict["00020010"]?.Value?.[0] as string) ||
-              TransferSyntax.ExplicitVRLittleEndian;
-            dataset.setElement("TransferSyntaxUID", transferSyntaxUid);
+            const datasetBytes = stripP10Header(item.buffer);
+
+            // Bypass dcmjs-dimse serialization — envía el buffer raw de R2
+            (dataset as any).getDenaturalizedDataset = () => datasetBytes;
 
             const storeRequest = new CStoreRequest(dataset);
 
