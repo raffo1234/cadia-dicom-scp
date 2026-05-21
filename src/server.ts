@@ -1,7 +1,7 @@
 import { setDefaultResultOrder } from "dns";
 setDefaultResultOrder("ipv4first");
 
-import * as fs from "fs";
+import dcmjs from 'dcmjs';
 import "dotenv/config";
 import type { Socket } from "net";
 import { Server, Scp, requests, responses, constants, Dataset, association } from "dcmjs-dimse";
@@ -246,7 +246,16 @@ class CadiaScp extends Scp {
     const elements: Record<string, unknown> = request.getDataset()?.getElements() ?? {};
     const queryLevel = toQueryLevel(elements.QueryRetrieveLevel);
 
-    const pendingResponses: CGetResponseType[] = [];
+    const association = this.currentAssociation;
+    if (!association) {
+      const final = CGetResponse.fromRequest(request);
+      final.setStatus(Status.ProcessingFailure);
+      callback([final]);
+      return;
+    }
+
+    let completedSubOps = 0;
+    let failedSubOps = 0;
 
     void handleCGetScp(
       callingAeTitle,
@@ -255,43 +264,92 @@ class CadiaScp extends Scp {
       elements,
       queryLevel,
       (completed, remaining, failed) => {
-        const pending = CGetResponse.fromRequest(request);
-        pending.setStatus(Status.Pending);
-        pending.setCompleted(completed);
-        pending.setRemaining(remaining);
-        pending.setFailures(failed);
-        pendingResponses.push(pending);
+        console.log(`[C-GET] Progreso R2: ${completed} completados, ${remaining} restantes`);
       },
     )
-      .then((result) => {
-        let msgId = 1;
-        for (const tempPath of result.tempFiles) {
-          const storeRequest = new CStoreRequest(tempPath);
-          (storeRequest as unknown as { setMessageId: (id: number) => void }).setMessageId(msgId++);
-          pendingResponses.push(storeRequest as unknown as CGetResponseType);
-        }
+    .then(async (result) => {
+      const allResponses: CGetResponseType[] = [];
 
-        const final = CGetResponse.fromRequest(request);
-        final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-        final.setCompleted(result.completed);
-        final.setRemaining(0);
-        final.setFailures(result.failed);
-        pendingResponses.push(final);
-        callback(pendingResponses);
+      if (result.success && result.buffers.length > 0) {
+        console.log(`[SCP] Procesando ${result.buffers.length} instancias en memoria...`);
 
-        // Cleanup temp files después de enviar
-        setTimeout(() => {
-          for (const f of result.tempFiles) {
-            try {
-              fs.unlinkSync(f);
-            } catch { /* ignore */ }
+        // ── DEBUG: descubrir API real de dcmjs-dimse ──────────────────────
+        console.log('[DEBUG] association proto methods:',
+          Object.getOwnPropertyNames(Object.getPrototypeOf(association as any)));
+
+        const probeDataset = new Dataset({});
+        const probeStore = new CStoreRequest(probeDataset);
+        console.log('[DEBUG] CStoreRequest proto methods:',
+          Object.getOwnPropertyNames(Object.getPrototypeOf(probeStore)));
+
+        console.log('[DEBUG] this (Scp) proto methods:',
+          Object.getOwnPropertyNames(Object.getPrototypeOf(this)));
+        // ─────────────────────────────────────────────────────────────────
+
+        for (const item of result.buffers) {
+          try {
+            const arrayBuffer = item.buffer.buffer.slice(
+              item.buffer.byteOffset,
+              item.buffer.byteOffset + item.buffer.byteLength
+            ) as ArrayBuffer;
+
+            const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer);
+            const dataset = new Dataset(dicomData.dict);
+
+            dataset.setElement("SOPClassUID", item.sopClassUid);
+            dataset.setElement("SOPInstanceUID", item.sopInstanceUid);
+
+            const dict = dicomData.dict as Record<string, { Value?: unknown[] }>;
+            const transferSyntaxUid =
+              (dict["00020010"]?.Value?.[0] as string) ||
+              TransferSyntax.ExplicitVRLittleEndian;
+            dataset.setElement("TransferSyntaxUID", transferSyntaxUid);
+
+            const storeRequest = new CStoreRequest(dataset);
+
+            await new Promise<void>((resolve) => {
+              (storeRequest as any).on('response', (storeResponse: any) => {
+                const status = storeResponse.getStatus();
+                if (status === Status.Success || status === 0) {
+                  completedSubOps++;
+                } else {
+                  failedSubOps++;
+                }
+                resolve();
+              });
+              (this as any).sendRequests([storeRequest]);
+            });
+
+            const pending = CGetResponse.fromRequest(request);
+            pending.setStatus(Status.Pending);
+            pending.setCompleted(completedSubOps);
+            pending.setRemaining(result.buffers.length - completedSubOps - failedSubOps);
+            pending.setFailures(failedSubOps + result.failed);
+            allResponses.push(pending);
+
+          } catch (err) {
+            console.error(`[SCP] Error procesando instancia:`, err);
+            failedSubOps++;
           }
-        }, 10_000);
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[SCP] cGetRequest error:", msg);
-      });
+        }
+      }
+
+      const final = CGetResponse.fromRequest(request);
+      final.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
+      final.setCompleted(completedSubOps);
+      final.setRemaining(0);
+      final.setFailures(failedSubOps + result.failed);
+      allResponses.push(final);
+
+      callback(allResponses);
+    })
+    .catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[SCP] cGetRequest error fatal:", msg);
+      const final = CGetResponse.fromRequest(request);
+      final.setStatus(Status.ProcessingFailure);
+      callback([final]);
+    });
   }
 }
 
