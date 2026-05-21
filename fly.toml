@@ -15,6 +15,13 @@ primary_region = 'gru'
   min_machines_running = 1
   processes = ['app']
 
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
 [[services]]
   protocol = 'tcp'
   internal_port = 11112
