@@ -163,15 +163,23 @@ class CadiaScp extends Scp {
       return;
     }
 
+    // Respond immediately so the modality can pipeline the next instance
+    // without waiting for R2 upload + DB write (~800ms/instance → sequential bottleneck).
+    // R2 upload and DB upsert run in the background; pendingUpserts ensures
+    // completeStudiesForAssociation only fires after all of them settle.
+    const response = CStoreResponse.fromRequest(request);
+    response.setStatus(Status.Success);
+    callback(response);
+
     const upsertPromise = handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset)
       .then((result) => {
         if (result.success && result.studyInstanceUID && result.hospitalId) {
           this.receivedStudyUIDs.add(result.studyInstanceUID);
           this.hospitalId = result.hospitalId;
         }
-        const response = CStoreResponse.fromRequest(request);
-        response.setStatus(result.success ? Status.Success : Status.ProcessingFailure);
-        callback(response);
+        if (!result.success) {
+          console.error(`[SCP] C-STORE background processing failed: ${result.reason}`);
+        }
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
