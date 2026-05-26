@@ -60,6 +60,7 @@ class CadiaScp extends Scp {
   private currentAssociation: AssociationType | undefined = undefined;
   private receivedStudyUIDs: Set<string> = new Set();
   private hospitalId: string = "";
+  private pendingUpserts: Set<Promise<unknown>> = new Set();
 
   constructor(socket: Socket, opts: Record<string, unknown>) {
     super(socket, opts);
@@ -70,6 +71,7 @@ class CadiaScp extends Scp {
     this.currentAssociation = assoc;
     this.receivedStudyUIDs = new Set();
     this.hospitalId = "";
+    this.pendingUpserts = new Set();
 
     const callingAeTitle = assoc.getCallingAeTitle().trim();
     const calledAeTitle = assoc.getCalledAeTitle().trim();
@@ -117,12 +119,16 @@ class CadiaScp extends Scp {
     this.sendAssociationReleaseResponse();
 
     if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
-      void completeStudiesForAssociation(Array.from(this.receivedStudyUIDs), this.hospitalId).catch(
-        (err: unknown) => {
+      const studyUIDs = Array.from(this.receivedStudyUIDs);
+      const hospitalId = this.hospitalId;
+      const pending = Array.from(this.pendingUpserts);
+
+      void Promise.allSettled(pending)
+        .then(() => completeStudiesForAssociation(studyUIDs, hospitalId))
+        .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           console.error("[SCP] Failed to complete studies on release:", msg);
-        },
-      );
+        });
     }
   }
 
@@ -157,7 +163,7 @@ class CadiaScp extends Scp {
       return;
     }
 
-    void handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset)
+    const upsertPromise = handleCStore(callingAeTitle, calledAeTitle, this.remoteAddress, dataset)
       .then((result) => {
         if (result.success && result.studyInstanceUID && result.hospitalId) {
           this.receivedStudyUIDs.add(result.studyInstanceUID);
@@ -170,7 +176,12 @@ class CadiaScp extends Scp {
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[SCP] cStoreRequest error:", msg);
+      })
+      .finally(() => {
+        this.pendingUpserts.delete(upsertPromise);
       });
+
+    this.pendingUpserts.add(upsertPromise);
   }
 
   cFindRequest(

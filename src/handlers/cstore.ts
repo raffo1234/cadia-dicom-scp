@@ -165,8 +165,10 @@ export const handleCStore = async (
     dicomDict.dict = dcmjsData.DicomMetaDictionary.denaturalizeDataset(elements);
     fileBuffer = Buffer.from(dicomDict.write());
 
-    const dicomData = dcmjsData.DicomMessage.readFile(fileBuffer.buffer as ArrayBuffer);
-    dataset = dcmjsData.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
+    // Optimization: naturalize dicomDict.dict directly instead of writing to buffer
+    // and re-parsing it (dcmjsData.DicomMessage.readFile + naturalizeDataset).
+    // dicomDict.dict is exactly what readFile would return as .dict — no I/O needed.
+    dataset = dcmjsData.DicomMetaDictionary.naturalizeDataset(dicomDict.dict);
   } catch (err) {
     console.error(`[C-STORE] Failed to parse DICOM from ${callingAeTitle}:`, err);
     return { success: false, reason: "Failed to parse DICOM file" };
@@ -227,85 +229,42 @@ export const handleCStore = async (
     number_of_frames: tagInt(dataset, "NumberOfFrames"),
   };
 
-  // 6. Upsert study in dicom_study
-  const { data: existingStudy } = await supabase
-    .from("dicom_study")
-    .select("id, received_instances, total_instances")
-    .eq("study_instance_uid", studyInstanceUID)
-    .eq("hospital_id", hospital.hospital_id)
-    .maybeSingle();
+  // 6. Upsert estudio + instancia en una sola operación atómica
+  const { data: upsertResult, error: upsertError } = await supabase.rpc(
+    "upsert_dicom_instance",
+    {
+      p_study_instance_uid:   studyInstanceUID,
+      p_hospital_id:          hospital.hospital_id,
+      p_ae_title_source:      callingAeTitle,
+      p_ae_title_destination: calledAeTitle,
+      p_patient_name:         tag(dataset, "PatientName") ?? null,
+      p_patient_id:           tag(dataset, "PatientID") ?? null,
+      p_patient_age:          tag(dataset, "PatientAge") ?? null,
+      p_patient_sex:          tag(dataset, "PatientSex") ?? null,
+      p_study_description:    tag(dataset, "StudyDescription") ?? null,
+      p_study_date:           tag(dataset, "StudyDate") ?? null,
+      p_modality:             tag(dataset, "Modality") ?? "OT",
+      p_total_instances:      tagInt(dataset, "ImagesInAcquisition") ?? 0,
+      p_instance:             instance as unknown as Record<string, unknown>,
+      p_remote_address:       remoteAddress,
+    },
+  );
 
-  if (!existingStudy) {
-    const { data: newStudy, error: insertError } = await supabase
-      .from("dicom_study")
-      .insert({
-        study_instance_uid: studyInstanceUID,
-        hospital_id: hospital.hospital_id,
-        ae_title_source: callingAeTitle,
-        ae_title_destination: calledAeTitle,
-        patient_name: tag(dataset, "PatientName"),
-        patient_id: tag(dataset, "PatientID"),
-        patient_age: tag(dataset, "PatientAge"),
-        patient_sex: tag(dataset, "PatientSex"),
-        study_description: tag(dataset, "StudyDescription"),
-        study_date: tag(dataset, "StudyDate"),
-        modality: tag(dataset, "Modality") ?? "OT",
-        instances: [instance],
-        receive_status: "receiving",
-        received_instances: 1,
-        total_instances: tagInt(dataset, "ImagesInAcquisition") ?? 0,
-      })
-      .select("id")
-      .single();
-
-    if (insertError) {
-      console.error(`[C-STORE] Failed to insert study ${studyInstanceUID}:`, insertError.message);
-      return { success: false, reason: "Failed to save study metadata" };
-    }
-
-    await supabase.from("dicom_audit_log").insert({
-      study_id: newStudy.id,
-      hospital_id: hospital.hospital_id,
-      action: "c-store",
-      ae_title: callingAeTitle,
-      ip_address: remoteAddress,
-    });
-  } else {
-    const { data: result, error: appendError } = await supabase.rpc("append_dicom_instance_v2", {
-      study_id: existingStudy.id,
-      instance: instance,
-    });
-
-    if (appendError) {
-      console.error(`[C-STORE] Failed to append instance:`, appendError.message);
-      return { success: false, reason: "Failed to append instance" };
-    }
-
-    const { received, total, is_complete } = result[0];
-
-    if (received === existingStudy.received_instances) {
-      console.log(`[C-STORE] Skipping duplicate ${sopInstanceUID}`);
-      return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
-    }
-
-    const { error: updateError } = await supabase
-      .from("dicom_study")
-      .update({
-        received_instances: received,
-        receive_status: is_complete ? "complete" : "receiving",
-        ...(is_complete && { completed_at: new Date().toISOString() }),
-      })
-      .eq("id", existingStudy.id);
-
-    if (updateError) {
-      console.error(`[C-STORE] Failed to update study ${studyInstanceUID}:`, updateError.message);
-      return { success: false, reason: "Failed to update study metadata" };
-    }
+  if (upsertError) {
+    console.error(
+      `[C-STORE] upsert_dicom_instance failed for ${sopInstanceUID}:`,
+      upsertError.message,
+    );
+    return { success: false, reason: "Failed to save instance metadata" };
   }
 
-  console.log(
-    `[C-STORE] ✓ ${sopInstanceUID} → ${hospital.hospital.name} (${hospital.hospital.r2_bucket})`,
-  );
+  const upserted = upsertResult as { study_id: string; is_duplicate: boolean };
+
+  if (upserted.is_duplicate) {
+    console.log(`[C-STORE] Duplicate skipped: ${sopInstanceUID}`);
+  } else {
+    console.log(`[C-STORE] ✓ ${sopInstanceUID} → ${hospital.hospital.name}`);
+  }
 
   return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
 };

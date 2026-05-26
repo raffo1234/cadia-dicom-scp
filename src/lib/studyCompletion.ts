@@ -1,96 +1,78 @@
 import { supabase } from "./supabase";
 
 /**
- * Mark all receiving studies from a specific association as complete.
- * Called when associationReleaseRequested fires — the modality finished sending.
+ * Finaliza estudios al soltar la asociación DICOM.
+ * Sincroniza received_instances desde el array real y marca como complete.
+ * Llamada desde associationReleaseRequested (fire-and-forget).
  */
 export const completeStudiesForAssociation = async (
   studyInstanceUIDs: string[],
   hospitalId: string,
 ): Promise<void> => {
-  if (studyInstanceUIDs.length === 0) {
-    return;
-  }
+  if (studyInstanceUIDs.length === 0) return;
 
-  const { error } = await supabase
-    .from("dicom_study")
-    .update({
-      receive_status: "complete",
-      completed_at: new Date().toISOString(),
-    })
-    .in("study_instance_uid", studyInstanceUIDs)
-    .eq("hospital_id", hospitalId)
-    .eq("receive_status", "receiving");
+  const { error } = await supabase.rpc("finalize_studies", {
+    p_study_uids:  studyInstanceUIDs,
+    p_hospital_id: hospitalId,
+  });
 
   if (error) {
-    console.error("[StudyCompletion] Failed to complete studies on release:", error.message);
+    console.error("[StudyCompletion] finalize_studies failed:", error.message);
   } else {
     console.log(
-      `[StudyCompletion] Marked ${studyInstanceUIDs.length} study/studies as complete (association release)`,
+      `[StudyCompletion] Finalized ${studyInstanceUIDs.length} study/studies on association release`,
     );
   }
 };
 
 /**
- * Mark a single study as complete by StudyInstanceUID only.
- * Used by C-GET SCU where hospitalId may not match what handleCStore resolved.
+ * Finaliza un estudio individual por UID.
+ * Usado por C-GET SCU donde hospitalId puede no estar disponible.
  */
 export const completeStudyByUID = async (studyInstanceUID: string): Promise<void> => {
-  const { error } = await supabase
-    .from("dicom_study")
-    .update({
-      receive_status: "complete",
-      completed_at: new Date().toISOString(),
-    })
-    .eq("study_instance_uid", studyInstanceUID)
-    .eq("receive_status", "receiving");
+  const { error } = await supabase.rpc("finalize_study_by_uid", {
+    p_study_uid: studyInstanceUID,
+  });
 
   if (error) {
-    console.error("[StudyCompletion] Failed to complete study:", error.message);
+    console.error("[StudyCompletion] finalize_study_by_uid failed:", error.message);
   } else {
-    console.log(`[StudyCompletion] Marked ${studyInstanceUID} as complete`);
+    console.log(`[StudyCompletion] Finalized ${studyInstanceUID}`);
   }
 };
 
 /**
- * Background job — runs every 5 minutes.
- * Finds studies stuck in "receiving" for more than 10 minutes and marks them complete.
- * Catches edge cases where modality disconnects without releasing (crash, network drop).
+ * Watchdog — corre cada 5 minutos.
+ * Estudios en "receiving" por más de 10 minutos → finalizados con contador real.
+ * Cubre casos donde la modalidad desconecta sin soltar la asociación.
  */
 export const startCompletionWatchdog = (): void => {
-  const INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
-  const STALE_AFTER_MS = 10 * 60 * 1000; // studies older than 10 minutes
+  const INTERVAL_MS    = 5 * 60 * 1000;
+  const STALE_AFTER_MS = 10 * 60 * 1000;
 
-  const run = async () => {
+  const run = async (): Promise<void> => {
     const staleThreshold = new Date(Date.now() - STALE_AFTER_MS).toISOString();
 
-    const { data, error } = await supabase
-      .from("dicom_study")
-      .update({
-        receive_status: "complete",
-        completed_at: new Date().toISOString(),
-      })
-      .eq("receive_status", "receiving")
-      .lt("received_at", staleThreshold)
-      .select("id, study_instance_uid, received_instances");
+    const { data, error } = await supabase.rpc("finalize_stale_studies", {
+      p_stale_threshold: staleThreshold,
+    });
 
     if (error) {
-      console.error("[Watchdog] Failed to complete stale studies:", error.message);
+      console.error("[Watchdog] finalize_stale_studies failed:", error.message);
       return;
     }
 
-    if (data && data.length > 0) {
+    const results = (data as Array<{ uid: string; count: number }> | null) ?? [];
+
+    if (results.length > 0) {
       console.log(
-        `[Watchdog] Marked ${data.length} stale study/studies as complete:`,
-        data.map((s) => `${s.study_instance_uid} (${s.received_instances} instances)`).join(", "),
+        `[Watchdog] Finalized ${results.length} stale study/studies:`,
+        results.map((s) => `${s.uid} (${s.count} instances)`).join(", "),
       );
     }
   };
 
   void run();
-
-  setInterval(() => {
-    void run();
-  }, INTERVAL_MS);
-  console.log("[Watchdog] Study completion watchdog started (every 5 min, stale after 10 min)");
+  setInterval(() => void run(), INTERVAL_MS);
+  console.log("[Watchdog] Started (every 5 min, stale after 10 min)");
 };
