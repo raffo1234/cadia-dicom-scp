@@ -97,6 +97,34 @@ const resolveHospitalById = async (hospitalId: string): Promise<HospitalAccess |
 };
 
 /**
+ * Retries an async operation up to maxAttempts times with linear backoff.
+ * Used to make R2 uploads and DB upserts resilient to transient failures.
+ */
+const withRetry = async <T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxAttempts: number = 3,
+  delayMs: number = 500,
+): Promise<T> => {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt < maxAttempts) {
+        console.warn(`[C-STORE] ${label} — attempt ${attempt}/${maxAttempts} failed: ${msg}. Retrying in ${delayMs * attempt}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+      } else {
+        console.error(`[C-STORE] ${label} — all ${maxAttempts} attempts failed: ${msg}`);
+      }
+    }
+  }
+  throw lastError;
+};
+
+/**
  * C-STORE — receives a single DICOM instance from a modality
  * Called once per file during a study send
  */
@@ -165,10 +193,10 @@ export const handleCStore = async (
     dicomDict.dict = dcmjsData.DicomMetaDictionary.denaturalizeDataset(elements);
     fileBuffer = Buffer.from(dicomDict.write());
 
-    // Optimization: naturalize dicomDict.dict directly instead of writing to buffer
-    // and re-parsing it (dcmjsData.DicomMessage.readFile + naturalizeDataset).
-    // dicomDict.dict is exactly what readFile would return as .dict — no I/O needed.
-    dataset = dcmjsData.DicomMetaDictionary.naturalizeDataset(dicomDict.dict);
+    // Use elements directly from dcmjs-dimse — already naturalized, no round-trip needed.
+    // naturalizeDataset crashes on null values inside private/sequence tags that some
+    // modalities produce. getElements() never crashes because dcmjs-dimse handles them safely.
+    dataset = elements as Record<string, any>;
   } catch (err) {
     console.error(`[C-STORE] Failed to parse DICOM from ${callingAeTitle}:`, err);
     return { success: false, reason: "Failed to parse DICOM file" };
@@ -185,14 +213,17 @@ export const handleCStore = async (
     return { success: false, reason: "Missing required DICOM UIDs" };
   }
 
-  // 4. Upload to R2
+  // 4. Upload to R2 — with retry for transient failures
   const storagePath = `dicom/${studyInstanceUID}/${seriesInstanceUID}/${sopInstanceUID}.dcm`;
   let storageUrl: string;
 
   try {
-    storageUrl = await uploadToR2(hospital.hospital.r2_bucket, storagePath, fileBuffer);
+    storageUrl = await withRetry(
+      () => uploadToR2(hospital.hospital.r2_bucket, storagePath, fileBuffer),
+      `R2 upload ${sopInstanceUID}`,
+    );
   } catch (err) {
-    console.error(`[C-STORE] R2 upload failed for ${sopInstanceUID}:`, err);
+    console.error(`[C-STORE] R2 upload permanently failed for ${sopInstanceUID}:`, err);
     return { success: false, reason: "Failed to upload to storage" };
   }
 
@@ -229,38 +260,39 @@ export const handleCStore = async (
     number_of_frames: tagInt(dataset, "NumberOfFrames"),
   };
 
-  // 6. Upsert estudio + instancia en una sola operación atómica
-  const { data: upsertResult, error: upsertError } = await supabase.rpc(
-    "upsert_dicom_instance",
-    {
-      p_study_instance_uid:   studyInstanceUID,
-      p_hospital_id:          hospital.hospital_id,
-      p_ae_title_source:      callingAeTitle,
-      p_ae_title_destination: calledAeTitle,
-      p_patient_name:         tag(dataset, "PatientName") ?? null,
-      p_patient_id:           tag(dataset, "PatientID") ?? null,
-      p_patient_age:          tag(dataset, "PatientAge") ?? null,
-      p_patient_sex:          tag(dataset, "PatientSex") ?? null,
-      p_study_description:    tag(dataset, "StudyDescription") ?? null,
-      p_study_date:           tag(dataset, "StudyDate") ?? null,
-      p_modality:             tag(dataset, "Modality") ?? "OT",
-      p_total_instances:      tagInt(dataset, "ImagesInAcquisition") ?? 0,
-      p_instance:             instance as unknown as Record<string, unknown>,
-      p_remote_address:       remoteAddress,
-    },
-  );
+  // 6. Upsert estudio + instancia en una sola operación atómica — con retry
+  const rpcParams = {
+    p_study_instance_uid:   studyInstanceUID,
+    p_hospital_id:          hospital.hospital_id,
+    p_ae_title_source:      callingAeTitle,
+    p_ae_title_destination: calledAeTitle,
+    p_patient_name:         tag(dataset, "PatientName") ?? null,
+    p_patient_id:           tag(dataset, "PatientID") ?? null,
+    p_patient_age:          tag(dataset, "PatientAge") ?? null,
+    p_patient_sex:          tag(dataset, "PatientSex") ?? null,
+    p_study_description:    tag(dataset, "StudyDescription") ?? null,
+    p_study_date:           tag(dataset, "StudyDate") ?? null,
+    p_modality:             tag(dataset, "Modality") ?? "OT",
+    p_total_instances:      tagInt(dataset, "ImagesInAcquisition") ?? 0,
+    p_instance:             instance as unknown as Record<string, unknown>,
+    p_remote_address:       remoteAddress,
+  };
 
-  if (upsertError) {
-    console.error(
-      `[C-STORE] upsert_dicom_instance failed for ${sopInstanceUID}:`,
-      upsertError.message,
-    );
+  let upsertResult: { study_id: string; is_duplicate: boolean };
+
+  try {
+    upsertResult = await withRetry(async () => {
+      const { data, error } = await supabase.rpc("upsert_dicom_instance", rpcParams);
+      if (error) throw new Error(error.message);
+      return data as { study_id: string; is_duplicate: boolean };
+    }, `DB upsert ${sopInstanceUID}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[C-STORE] upsert_dicom_instance permanently failed for ${sopInstanceUID}:`, msg);
     return { success: false, reason: "Failed to save instance metadata" };
   }
 
-  const upserted = upsertResult as { study_id: string; is_duplicate: boolean };
-
-  if (upserted.is_duplicate) {
+  if (upsertResult.is_duplicate) {
     console.log(`[C-STORE] Duplicate skipped: ${sopInstanceUID}`);
   } else {
     console.log(`[C-STORE] ✓ ${sopInstanceUID} → ${hospital.hospital.name}`);

@@ -118,18 +118,26 @@ class CadiaScp extends Scp {
   associationReleaseRequested(): void {
     this.sendAssociationReleaseResponse();
 
-    if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
-      const studyUIDs = Array.from(this.receivedStudyUIDs);
-      const hospitalId = this.hospitalId;
-      const pending = Array.from(this.pendingUpserts);
+    // Capture pending upserts immediately — before any of them finish.
+    // We must NOT check receivedStudyUIDs here because with respond-immediately
+    // the C-STORE handlers are still running in the background when the release
+    // arrives. receivedStudyUIDs is populated inside those handlers' .then(),
+    // so it would be empty at this point for fast associations (small studies).
+    // Instead, wait for all pending upserts to settle first, then check.
+    const pending = Array.from(this.pendingUpserts);
 
-      void Promise.allSettled(pending)
-        .then(() => completeStudiesForAssociation(studyUIDs, hospitalId))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error("[SCP] Failed to complete studies on release:", msg);
-        });
-    }
+    void Promise.allSettled(pending)
+      .then(() => {
+        if (this.receivedStudyUIDs.size > 0 && this.hospitalId) {
+          const studyUIDs = Array.from(this.receivedStudyUIDs);
+          const hospitalId = this.hospitalId;
+          return completeStudiesForAssociation(studyUIDs, hospitalId);
+        }
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SCP] Failed to complete studies on release:", msg);
+      });
   }
 
   cEchoRequest(request: CEchoRequestType, callback: (response: CEchoResponseType) => void): void {
