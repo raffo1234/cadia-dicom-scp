@@ -271,21 +271,7 @@ export const handleCStore = async (
       ip_address: remoteAddress,
     });
   } else {
-    const { data: isDuplicate } = await supabase.rpc("instance_exists", {
-      study_id: existingStudy.id,
-      sop_uid: sopInstanceUID,
-    });
-
-    if (isDuplicate) {
-      console.log(`[C-STORE] Skipping duplicate ${sopInstanceUID}`);
-      return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
-    }
-
-    const newReceivedInstances = existingStudy.received_instances + 1;
-    const isComplete =
-      existingStudy.total_instances > 0 && newReceivedInstances >= existingStudy.total_instances;
-
-    const { error: appendError } = await supabase.rpc("append_dicom_instance", {
+    const { data: result, error: appendError } = await supabase.rpc("append_dicom_instance_v2", {
       study_id: existingStudy.id,
       instance: instance,
     });
@@ -295,12 +281,19 @@ export const handleCStore = async (
       return { success: false, reason: "Failed to append instance" };
     }
 
+    const { received, total, is_complete } = result[0];
+
+    if (received === existingStudy.received_instances) {
+      console.log(`[C-STORE] Skipping duplicate ${sopInstanceUID}`);
+      return { success: true, studyInstanceUID, hospitalId: hospital.hospital_id };
+    }
+
     const { error: updateError } = await supabase
       .from("dicom_study")
       .update({
-        received_instances: newReceivedInstances,
-        receive_status: isComplete ? "complete" : "receiving",
-        ...(isComplete && { completed_at: new Date().toISOString() }),
+        received_instances: received,
+        receive_status: is_complete ? "complete" : "receiving",
+        ...(is_complete && { completed_at: new Date().toISOString() }),
       })
       .eq("id", existingStudy.id);
 
