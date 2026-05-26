@@ -365,9 +365,11 @@ class CadiaScp extends Scp {
 const start = async (): Promise<void> => {
   console.log("[SCP] Starting Cadia DICOM SCP...");
 
+  // Start HTTP server first so Fly.io health checks pass immediately
+  // while the rest of the initialization (DB, registry) completes.
+  startHttpServer();
   await hospitalRegistry.init();
   startCompletionWatchdog();
-  startHttpServer();
 
   const server = new Server(CadiaScp);
   server.on("networkError", (err: Error) => {
