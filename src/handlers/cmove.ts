@@ -23,13 +23,15 @@ interface ResolvedCaller {
   r2_bucket: string;
 }
 
+// R2 downloads to run in parallel per batch
+const DOWNLOAD_CONCURRENCY = 10;
+
 /**
  * Resolves hospital_id from an AE title checking both tables:
  * 1. hospital_access (scanners/modalidades que envían estudios)
  * 2. ae_route (Orthanc u otros PACS destino que inician C-MOVE)
  */
 const resolveCallerFromAeTitle = async (aeTitle: string): Promise<ResolvedCaller | null> => {
-  // Buscar en hospital_access primero
   const { data: access } = await supabase
     .from("hospital_access")
     .select("hospital_id, allowed_ip, hospital:hospital_id(r2_bucket)")
@@ -46,7 +48,6 @@ const resolveCallerFromAeTitle = async (aeTitle: string): Promise<ResolvedCaller
     };
   }
 
-  // Si no está, buscar en ae_route (ej: ORTHANC)
   const { data: route } = await supabase
     .from("ae_route")
     .select("hospital_id, hospital:hospital_id(r2_bucket)")
@@ -83,7 +84,7 @@ export const handleCMove = async (
     return { success: false, completed: 0, failed: 0, reason: "SCP_AE_TITLE not configured" };
   }
 
-  // 1. Validar caller — busca en hospital_access y ae_route
+  // 1. Validar caller
   const caller = await resolveCallerFromAeTitle(callingAeTitle);
   if (!caller) {
     console.warn(`[C-MOVE] Rejected unknown AE title: ${callingAeTitle}`);
@@ -97,7 +98,7 @@ export const handleCMove = async (
 
   registerPendingMove(callingAeTitle, caller.hospital_id);
 
-  // 2. Resolver ruta destino filtrando por hospital_id Y ae_title
+  // 2. Resolver ruta destino
   const { data: route, error: routeError } = await supabase
     .from("ae_route")
     .select("host, port, ae_title")
@@ -108,6 +109,7 @@ export const handleCMove = async (
 
   if (routeError || !route) {
     console.warn(`[C-MOVE] Unknown move destination AE: ${moveDestination}`);
+    clearPendingMove(callingAeTitle);
     return {
       success: false,
       completed: 0,
@@ -120,8 +122,8 @@ export const handleCMove = async (
     `[C-MOVE] ${callingAeTitle} → ${calledAeTitle} | Dest: ${moveDestination} (${route.host}:${route.port}) | Level: ${queryLevel}`,
   );
 
-  // 3. Audit log
-  await supabase.from("dicom_audit_log").insert({
+  // 3. Audit log (fire-and-forget)
+  supabase.from("dicom_audit_log").insert({
     hospital_id: caller.hospital_id,
     action: "c-move",
     ae_title: callingAeTitle,
@@ -132,42 +134,56 @@ export const handleCMove = async (
   const instances = await resolveInstances(caller.hospital_id, query, queryLevel);
   if (instances.length === 0) {
     console.log(`[C-MOVE] No instances found for query`);
+    clearPendingMove(callingAeTitle);
     return { success: true, completed: 0, failed: 0 };
   }
 
-  console.log(`[C-MOVE] Found ${instances.length} instance(s) to forward`);
+  console.log(`[C-MOVE] Found ${instances.length} instance(s) — downloading in parallel (concurrency: ${DOWNLOAD_CONCURRENCY})`);
 
-  // 5. Send each instance to destination via C-STORE
-  let completed = 0;
-  let failed = 0;
+  // 5. Download all instances from R2 in parallel chunks
   const tempFiles: string[] = [];
+  let downloadFailed = 0;
 
-  for (const inst of instances) {
-    let tempPath: string | null = null;
-    try {
-      const buffer = await downloadFromR2(caller.r2_bucket, storageUrlToKey(inst.storage_url));
+  for (let i = 0; i < instances.length; i += DOWNLOAD_CONCURRENCY) {
+    const chunk = instances.slice(i, i + DOWNLOAD_CONCURRENCY);
 
-      tempPath = path.join(os.tmpdir(), `cadia-cmove-${inst.sop_instance_uid}.dcm`);
-      fs.writeFileSync(tempPath, buffer);
-      tempFiles.push(tempPath);
+    const results = await Promise.allSettled(
+      chunk.map(async (inst) => {
+        const buffer = await downloadFromR2(caller.r2_bucket, storageUrlToKey(inst.storage_url));
+        const tempPath = path.join(os.tmpdir(), `cadia-cmove-${inst.sop_instance_uid}.dcm`);
+        fs.writeFileSync(tempPath, buffer);
+        return tempPath;
+      }),
+    );
 
-      const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
-      const sent = await sendCStore(tempPath, route.host, route.port, MY_AE, route.ae_title);
-
-      if (sent) {
-        completed++;
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        tempFiles.push(result.value);
       } else {
-        failed++;
+        console.error(`[C-MOVE] Failed to download instance:`, result.reason);
+        downloadFailed++;
       }
-    } catch (err) {
-      console.error(`[C-MOVE] Failed to forward ${inst.sop_instance_uid}:`, err);
-      failed++;
     }
-
-    onPending(completed, instances.length - completed - failed, failed);
   }
 
-  // 6. Cleanup temp files
+  console.log(`[C-MOVE] Downloaded ${tempFiles.length} files (${downloadFailed} failed) — sending via single association`);
+
+  // 6. Send all files over a single DICOM association.
+  // Previously opened one connection per file (N TCP handshakes + N DICOM negotiations).
+  // Now: one association for all files — dramatically faster for large studies.
+  const MY_AE = process.env.SCP_AE_TITLE ?? "CADIA.PE";
+  const { completed, failed: sendFailed } = await sendCStoreBatch(
+    tempFiles,
+    route.host,
+    route.port,
+    MY_AE,
+    route.ae_title,
+    (done, remaining, f) => onPending(done, remaining, f + downloadFailed),
+  );
+
+  const failed = downloadFailed + sendFailed;
+
+  // 7. Cleanup temp files
   for (const f of tempFiles) {
     try {
       fs.unlinkSync(f);
@@ -182,41 +198,54 @@ export const handleCMove = async (
   return { success: true, completed, failed };
 };
 
-// ... sendCStore y resolveInstances sin cambios
-
 /**
- * Sends a single DICOM file to a destination via C-STORE
+ * Sends all files over a single DICOM association.
+ * One TCP connection + one DICOM negotiation for the entire study,
+ * vs the previous approach of one connection per file.
  */
-const sendCStore = (
-  filePath: string,
+const sendCStoreBatch = (
+  filePaths: string[],
   host: string,
   port: number,
   callingAeTitle: string,
   calledAeTitle: string,
-): Promise<boolean> => {
+  onProgress: (completed: number, remaining: number, failed: number) => void,
+): Promise<{ completed: number; failed: number }> => {
   return new Promise((resolve) => {
     const client = new Client();
-    const request = new CStoreRequest(filePath);
+    let completed = 0;
+    let failed = 0;
 
-    request.on("response", (response: InstanceType<typeof CStoreResponse>) => {
-      const status = response.getStatus();
-      console.log(
-        `[C-STORE→] Status: 0x${status.toString(16).toUpperCase()} to ${calledAeTitle}@${host}:${port}`,
-      );
-      if (status === Status.Success) {
-        resolve(true);
-      } else {
-        console.warn(`[C-MOVE] C-STORE response status: ${status}`);
-        resolve(false);
-      }
-    });
+    for (const filePath of filePaths) {
+      const request = new CStoreRequest(filePath);
+
+      request.on("response", (response: InstanceType<typeof CStoreResponse>) => {
+        const status = response.getStatus();
+        if (status === Status.Success) {
+          completed++;
+        } else {
+          console.warn(`[C-MOVE] C-STORE response status: 0x${status.toString(16).toUpperCase()}`);
+          failed++;
+        }
+        onProgress(completed, filePaths.length - completed - failed, failed);
+      });
+
+      client.addRequest(request);
+    }
 
     client.on("networkError", (err: Error) => {
       console.error(`[C-MOVE] Network error sending to ${calledAeTitle}:`, err.message);
-      resolve(false);
+      resolve({ completed, failed: filePaths.length - completed });
     });
 
-    client.addRequest(request);
+    // "associationReleased" fires on the Client after all requests are processed
+    // and the association release handshake completes. This is the correct signal
+    // that all C-STORE sub-operations are done (NOT "done", which fires on the
+    // internal connection object — never on the Client directly).
+    client.on("associationReleased", () => {
+      resolve({ completed, failed });
+    });
+
     client.send(host, port, callingAeTitle, calledAeTitle);
   });
 };

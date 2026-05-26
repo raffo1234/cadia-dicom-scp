@@ -28,6 +28,11 @@ export interface CGetScpResult {
   reason?: string;
 }
 
+// Number of R2 downloads to run in parallel.
+// 10 keeps memory bounded (~10 × 500 KB = 5 MB per batch) while cutting
+// download time by ~10x compared to the previous sequential loop.
+const DOWNLOAD_CONCURRENCY = 10;
+
 const resolveCallerFromAeTitle = async (aeTitle: string): Promise<ResolvedCaller | null> => {
   const { data: access } = await supabase
     .from("hospital_access")
@@ -123,7 +128,8 @@ export const handleCGetScp = async (
 
   console.log(`[C-GET SCP] ${callingAeTitle} → ${calledAeTitle} | Level: ${queryLevel} | Study: ${query.StudyInstanceUID}`);
 
-  await supabase.from("dicom_audit_log").insert({
+  // Fire-and-forget audit log — no bloquea la descarga
+  supabase.from("dicom_audit_log").insert({
     hospital_id: caller.hospital_id,
     action: "c-get",
     ae_title: callingAeTitle,
@@ -136,26 +142,41 @@ export const handleCGetScp = async (
     return { success: true, completed: 0, failed: 0, buffers: [] };
   }
 
-  console.log(`[C-GET SCP] Found ${instances.length} instance(s) to send`);
+  console.log(`[C-GET SCP] Found ${instances.length} instance(s) — downloading in parallel (concurrency: ${DOWNLOAD_CONCURRENCY})`);
 
   let completed = 0;
   let failed = 0;
   const buffers: DicomBuffer[] = [];
 
-  for (const inst of instances) {
-    try {
-      const { folder, key } = storageUrlToFolderAndKey(inst.storage_url);
-      const buffer = await downloadFromR2(folder, key);
-      buffers.push({
-        buffer,
-        sopClassUid: inst.sop_class_uid,
-        sopInstanceUid: inst.sop_instance_uid,
-      });
-      completed++;
-    } catch (err) {
-      console.error(`[C-GET SCP] Failed to download ${inst.sop_instance_uid}:`, err);
-      failed++;
+  // Download in parallel chunks instead of one at a time.
+  // Each chunk of DOWNLOAD_CONCURRENCY instances runs concurrently;
+  // we wait for the chunk to finish before starting the next one so
+  // memory stays bounded and onPending fires at predictable intervals.
+  for (let i = 0; i < instances.length; i += DOWNLOAD_CONCURRENCY) {
+    const chunk = instances.slice(i, i + DOWNLOAD_CONCURRENCY);
+
+    const results = await Promise.allSettled(
+      chunk.map(async (inst) => {
+        const { folder, key } = storageUrlToFolderAndKey(inst.storage_url);
+        const buffer = await downloadFromR2(folder, key);
+        return {
+          buffer,
+          sopClassUid: inst.sop_class_uid,
+          sopInstanceUid: inst.sop_instance_uid,
+        };
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        buffers.push(result.value);
+        completed++;
+      } else {
+        console.error(`[C-GET SCP] Failed to download instance:`, result.reason);
+        failed++;
+      }
     }
+
     onPending(completed, instances.length - completed - failed, failed);
   }
 
