@@ -6,7 +6,6 @@ import { Zip, ZipPassThrough } from "fflate";
 import { downloadFromR2 } from "./lib/r2";
 import { supabase } from "./lib/supabase";
 
-
 const { CFindRequest } = requests;
 const { CFindResponse, CMoveResponse } = responses;
 const { Status } = constants;
@@ -50,14 +49,14 @@ const executeCFind = (
 
     request.on("response", (response: CFindResponseType) => {
       const status = response.getStatus();
-      console.log(`[C-FIND] Response status: 0x${status.toString(16).toUpperCase()}`); // 👈
-      console.log(`[C-FIND] Has dataset: ${response.hasDataset()}`); // 👈
+      console.log(`[C-FIND] Response status: 0x${status.toString(16).toUpperCase()}`);
+      console.log(`[C-FIND] Has dataset: ${response.hasDataset()}`);
 
       if (status === Status.Pending && response.hasDataset()) {
         const ds = response.getDataset();
         if (ds) {
           const elements = ds.getElements();
-          console.log(`[C-FIND] Elements:`, JSON.stringify(elements).slice(0, 200)); // 👈
+          console.log(`[C-FIND] Elements:`, JSON.stringify(elements).slice(0, 200));
           results.push({
             StudyInstanceUID: elements.StudyInstanceUID ?? "",
             PatientName: extractPatientName(elements.PatientName),
@@ -73,7 +72,7 @@ const executeCFind = (
       }
 
       if (status === Status.Success) {
-        console.log(`[C-FIND] Done — ${results.length} result(s)`); // 👈
+        console.log(`[C-FIND] Done — ${results.length} result(s)`);
         resolve(results);
       }
     });
@@ -86,7 +85,7 @@ const executeCFind = (
     client.send(host, port, SCP_AE_TITLE, calledAeTitle);
 
     setTimeout(() => {
-      console.log(`[C-FIND] Timeout — ${results.length} result(s)`); // 👈
+      console.log(`[C-FIND] Timeout — ${results.length} result(s)`);
       resolve(results);
     }, 60_000);
   });
@@ -134,19 +133,11 @@ const executeCMove = (
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const extractPatientName = (val: unknown): string => {
-  if (!val) {
-    return "";
-  }
-  if (typeof val === "string") {
-    return val.trim();
-  }
+  if (!val) return "";
+  if (typeof val === "string") return val.trim();
   if (typeof val === "object" && val !== null) {
-    if ("Alphabetic" in val) {
-      return String((val as Record<string, unknown>).Alphabetic).trim();
-    }
-    if (Array.isArray(val) && val[0]?.Alphabetic) {
-      return String(val[0].Alphabetic).trim();
-    }
+    if ("Alphabetic" in val) return String((val as Record<string, unknown>).Alphabetic).trim();
+    if (Array.isArray(val) && val[0]?.Alphabetic) return String(val[0].Alphabetic).trim();
   }
   return String(val).trim();
 };
@@ -200,6 +191,7 @@ const handleRequest = async (
 
   const url = req.url ?? "";
 
+  // ── GET /download ────────────────────────────────────────────────────────────
   if (req.method === "GET" && url.startsWith("/download")) {
     const urlObj = new URL(url, "http://localhost");
     const studyInstanceUID = urlObj.searchParams.get("studyInstanceUID");
@@ -277,13 +269,27 @@ const handleRequest = async (
     return;
   }
 
-  // ── GET /health ─────────────────────────────────────────────────────────────
+  // ── GET /health ──────────────────────────────────────────────────────────────
   if (req.method === "GET" && url === "/health") {
     send(res, 200, { status: "ok", port: HTTP_PORT });
     return;
   }
 
-  // ── POST /find ──────────────────────────────────────────────────────────────
+  // ── GET /healthz — deep health check (verifica conectividad a Supabase) ──────
+  if (req.method === "GET" && url === "/healthz") {
+    try {
+      const { error } = await supabase.from("hospital").select("id").limit(1);
+      if (error) throw new Error(error.message);
+      send(res, 200, { status: "ok" });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[HTTP] /healthz failed:", msg);
+      send(res, 503, { status: "unhealthy", error: msg });
+    }
+    return;
+  }
+
+  // ── POST /find ───────────────────────────────────────────────────────────────
   if (req.method === "POST" && url === "/find") {
     try {
       const body = await parseBody(req);
@@ -309,7 +315,7 @@ const handleRequest = async (
     return;
   }
 
-  // ── POST /move ──────────────────────────────────────────────────────────────
+  // ── POST /move ───────────────────────────────────────────────────────────────
   if (req.method === "POST" && url === "/move") {
     try {
       const body = await parseBody(req);
@@ -343,8 +349,7 @@ const handleRequest = async (
     return;
   }
 
-  // ── POST /get ───────────────────────────────────────────────────────────────
-  // Body: { host, port, aeTitle, studyInstanceUID, hospitalId, queryLevel?, seriesInstanceUID?, sopInstanceUID? }
+  // ── POST /get ─────────────────────────────────────────────────────────────────
   if (req.method === "POST" && url === "/get") {
     try {
       const body = await parseBody(req);
