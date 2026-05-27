@@ -2,10 +2,22 @@ import * as http from "http";
 import { Client, requests, responses, constants } from "dcmjs-dimse";
 import { registerPendingMove } from "./lib/pendingMoves";
 import { getRemoteStudy } from "./handlers/cget-scu";
+import { Zip, ZipPassThrough } from "fflate";
+import { downloadFromR2 } from "./lib/r2";
+import { supabase } from "./lib/supabase";
+
 
 const { CFindRequest } = requests;
 const { CFindResponse, CMoveResponse } = responses;
 const { Status } = constants;
+
+const DOWNLOAD_CONCURRENCY = 50;
+
+const storageUrlToFolderAndKey = (storageUrl: string): { folder: string; key: string } => {
+  const idx = storageUrl.indexOf("/");
+  if (idx === -1) return { folder: storageUrl, key: "" };
+  return { folder: storageUrl.slice(0, idx), key: storageUrl.slice(idx + 1) };
+};
 
 type CFindResponseType = InstanceType<typeof CFindResponse>;
 type CMoveResponseType = InstanceType<typeof CMoveResponse>;
@@ -187,6 +199,83 @@ const handleRequest = async (
   }
 
   const url = req.url ?? "";
+
+  if (req.method === "GET" && url.startsWith("/download")) {
+    const urlObj = new URL(url, "http://localhost");
+    const studyInstanceUID = urlObj.searchParams.get("studyInstanceUID");
+    const hospitalId = urlObj.searchParams.get("hospitalId");
+
+    if (!studyInstanceUID || !hospitalId) {
+      send(res, 400, { error: "studyInstanceUID and hospitalId are required" });
+      return;
+    }
+
+    const { data: study } = await supabase
+      .from("dicom_study")
+      .select("patient_name, study_date, instances")
+      .eq("study_instance_uid", studyInstanceUID)
+      .eq("hospital_id", hospitalId)
+      .maybeSingle();
+
+    if (!study || !study.instances?.length) {
+      send(res, 404, { error: "Study not found or has no instances" });
+      return;
+    }
+
+    const instances = study.instances as { sop_instance_uid: string; storage_url: string }[];
+    const safePatientName = (study.patient_name ?? "study").replace(/[^a-zA-Z0-9_ -]/g, "_");
+    const safeDate = (study.study_date ?? "").replace(/\D/g, "");
+    const fileName = `${safePatientName}_${safeDate}.zip`;
+
+    console.log(`[HTTP] /download — ${instances.length} instances | study: ${studyInstanceUID}`);
+
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-cache",
+    });
+
+    let destroyed = false;
+    const zipStream = new Zip((err, chunk, final) => {
+      if (err) {
+        console.error("[HTTP] ZIP stream error:", err.message);
+        destroyed = true;
+        res.destroy();
+        return;
+      }
+      res.write(chunk);
+      if (final) res.end();
+    });
+
+    let index = 0;
+    let completed = 0;
+    let failed = 0;
+
+    const worker = async () => {
+      while (index < instances.length && !destroyed) {
+        const i = index++;
+        const inst = instances[i];
+        try {
+          const { folder, key } = storageUrlToFolderAndKey(inst.storage_url);
+          const buffer = await downloadFromR2(folder, key);
+          const file = new ZipPassThrough(`${studyInstanceUID}/${inst.sop_instance_uid}.dcm`);
+          zipStream.add(file);
+          file.push(new Uint8Array(buffer), true);
+          completed++;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[HTTP] Download failed for ${inst.sop_instance_uid}: ${msg}`);
+          failed++;
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: DOWNLOAD_CONCURRENCY }, worker));
+    console.log(`[HTTP] /download done — completed: ${completed}, failed: ${failed}`);
+    if (!destroyed) zipStream.end();
+    return;
+  }
 
   // ── GET /health ─────────────────────────────────────────────────────────────
   if (req.method === "GET" && url === "/health") {
