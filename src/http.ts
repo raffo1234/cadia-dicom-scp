@@ -185,6 +185,8 @@ const getString = (val: unknown): string | undefined => (typeof val === "string"
 const getNumber = (val: unknown): number | undefined =>
   typeof val === "number" ? val : typeof val === "string" ? parseInt(val, 10) : undefined;
 
+let healthzFailures = 0;
+
 // ─── Request Handler ──────────────────────────────────────────────────────────
 
 const handleRequest = async (
@@ -325,11 +327,17 @@ const handleRequest = async (
     try {
       const { error } = await supabase.from("hospital").select("id").limit(1);
       if (error) throw new Error(error.message);
+      healthzFailures = 0;
       send(res, 200, { status: "ok" });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[HTTP] /healthz failed:", msg);
+      healthzFailures++;
       send(res, 503, { status: "unhealthy", error: msg });
+      if (healthzFailures >= 3) {
+        console.error(`[HTTP] /healthz failed ${healthzFailures} times in a row — restarting process`);
+        setTimeout(() => process.exit(1), 500);
+      }
     }
     return;
   }
