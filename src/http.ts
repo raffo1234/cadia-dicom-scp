@@ -11,7 +11,7 @@ const { CFindResponse, CMoveResponse } = responses;
 const { Status } = constants;
 
 const DOWNLOAD_CONCURRENCY = 50;
-const DOWNLOAD_TIMEOUT_MS = 45_000; // per-file safety net (large multiframe files)
+const DOWNLOAD_TIMEOUT_MS = 10_000; // per-file timeout — 10s is plenty for any DICOM file on co-located R2
 const CIRCUIT_BREAKER_THRESHOLD = 10; // abort if 10 consecutive failures
 
 const downloadWithTimeout = (folder: string, key: string): Promise<Buffer> => {
@@ -240,6 +240,8 @@ const handleRequest = async (
     });
 
     let destroyed = false;
+    let drainPromise: Promise<void> | null = null;
+
     const zipStream = new Zip((err, chunk, final) => {
       if (err) {
         console.error("[HTTP] ZIP stream error:", err.message);
@@ -247,7 +249,15 @@ const handleRequest = async (
         res.destroy();
         return;
       }
-      res.write(chunk);
+      const ok = res.write(chunk);
+      if (!ok && !drainPromise) {
+        drainPromise = new Promise<void>((resolve) => {
+          res.once("drain", () => {
+            drainPromise = null;
+            resolve();
+          });
+        });
+      }
       if (final) res.end();
     });
 
@@ -258,6 +268,10 @@ const handleRequest = async (
 
     const worker = async () => {
       while (index < instances.length && !destroyed) {
+        // Backpressure: wait for client to drain before downloading next file
+        if (drainPromise) await drainPromise;
+        if (destroyed) return;
+
         const i = index++;
         const inst = instances[i];
         try {
