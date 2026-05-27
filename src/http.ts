@@ -258,7 +258,13 @@ const handleRequest = async (
           });
         });
       }
-      if (final) res.end();
+      if (final) {
+        if (drainPromise) {
+          drainPromise.then(() => res.end());
+        } else {
+          res.end();
+        }
+      }
     });
 
     let index = 0;
@@ -271,6 +277,7 @@ const handleRequest = async (
         // Backpressure: wait for client to drain before downloading next file
         if (drainPromise) await drainPromise;
         if (destroyed) return;
+        if (index >= instances.length) return; // re-check after await — another worker may have advanced index
 
         const i = index++;
         const inst = instances[i];
@@ -288,8 +295,11 @@ const handleRequest = async (
           failed++;
           consecutiveFails++;
 
-          if (consecutiveFails >= CIRCUIT_BREAKER_THRESHOLD) {
-            console.error(`[HTTP] Circuit breaker triggered after ${consecutiveFails} consecutive failures — aborting download`);
+          // Circuit breaker: only abort if the machine appears broken from the start.
+          // If we've already downloaded files successfully, the machine is healthy —
+          // skip bad files and deliver the ZIP with what we have.
+          if (consecutiveFails >= CIRCUIT_BREAKER_THRESHOLD && completed === 0) {
+            console.error(`[HTTP] Circuit breaker triggered — machine appears broken, aborting`);
             destroyed = true;
             res.destroy();
             return;
