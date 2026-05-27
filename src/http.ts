@@ -11,6 +11,17 @@ const { CFindResponse, CMoveResponse } = responses;
 const { Status } = constants;
 
 const DOWNLOAD_CONCURRENCY = 50;
+const DOWNLOAD_TIMEOUT_MS = 45_000; // per-file safety net (large multiframe files)
+const CIRCUIT_BREAKER_THRESHOLD = 10; // abort if 10 consecutive failures
+
+const downloadWithTimeout = (folder: string, key: string): Promise<Buffer> => {
+  return Promise.race([
+    downloadFromR2(folder, key),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`R2 download timeout after ${DOWNLOAD_TIMEOUT_MS}ms`)), DOWNLOAD_TIMEOUT_MS),
+    ),
+  ]);
+};
 
 const storageUrlToFolderAndKey = (storageUrl: string): { folder: string; key: string } => {
   const idx = storageUrl.indexOf("/");
@@ -243,6 +254,7 @@ const handleRequest = async (
     let index = 0;
     let completed = 0;
     let failed = 0;
+    let consecutiveFails = 0;
 
     const worker = async () => {
       while (index < instances.length && !destroyed) {
@@ -250,15 +262,24 @@ const handleRequest = async (
         const inst = instances[i];
         try {
           const { folder, key } = storageUrlToFolderAndKey(inst.storage_url);
-          const buffer = await downloadFromR2(folder, key);
+          const buffer = await downloadWithTimeout(folder, key);
           const file = new ZipPassThrough(`${studyInstanceUID}/${inst.sop_instance_uid}.dcm`);
           zipStream.add(file);
           file.push(new Uint8Array(buffer), true);
           completed++;
+          consecutiveFails = 0; // reset on success
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error(`[HTTP] Download failed for ${inst.sop_instance_uid}: ${msg}`);
           failed++;
+          consecutiveFails++;
+
+          if (consecutiveFails >= CIRCUIT_BREAKER_THRESHOLD) {
+            console.error(`[HTTP] Circuit breaker triggered after ${consecutiveFails} consecutive failures — aborting download`);
+            destroyed = true;
+            res.destroy();
+            return;
+          }
         }
       }
     };
