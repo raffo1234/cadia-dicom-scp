@@ -186,6 +186,7 @@ const getNumber = (val: unknown): number | undefined =>
   typeof val === "number" ? val : typeof val === "string" ? parseInt(val, 10) : undefined;
 
 let healthzFailures = 0;
+let activeDownloads = 0;
 
 // ─── Request Handler ──────────────────────────────────────────────────────────
 
@@ -205,21 +206,19 @@ const handleRequest = async (
   const url = req.url ?? "";
 
   // ── GET /download ────────────────────────────────────────────────────────────
-  if (req.method === "GET" && url.startsWith("/download")) {
+  if (req.method === "GET" && url.startsWith("/download") && !url.startsWith("/download/validate")) {
     const urlObj = new URL(url, "http://localhost");
-    const studyInstanceUID = urlObj.searchParams.get("studyInstanceUID");
-    const hospitalId = urlObj.searchParams.get("hospitalId");
+    const studyId = urlObj.searchParams.get("studyId");
 
-    if (!studyInstanceUID || !hospitalId) {
-      send(res, 400, { error: "studyInstanceUID and hospitalId are required" });
+    if (!studyId) {
+      send(res, 400, { error: "studyId is required" });
       return;
     }
 
     const { data: study } = await supabase
       .from("dicom_study")
-      .select("patient_name, study_date, instances")
-      .eq("study_instance_uid", studyInstanceUID)
-      .eq("hospital_id", hospitalId)
+      .select("study_instance_uid, patient_name, study_date, instances")
+      .eq("id", studyId)
       .maybeSingle();
 
     if (!study || !study.instances?.length) {
@@ -227,12 +226,14 @@ const handleRequest = async (
       return;
     }
 
+    const studyInstanceUID = study.study_instance_uid ?? studyId;
     const instances = study.instances as { sop_instance_uid: string; storage_url: string }[];
     const safePatientName = (study.patient_name ?? "study").replace(/[^a-zA-Z0-9_ -]/g, "_");
     const safeDate = (study.study_date ?? "").replace(/\D/g, "");
     const fileName = `${safePatientName}_${safeDate}.zip`;
 
     console.log(`[HTTP] /download — ${instances.length} instances | study: ${studyInstanceUID}`);
+    activeDownloads++;
 
     res.writeHead(200, {
       "Content-Type": "application/zip",
@@ -311,8 +312,39 @@ const handleRequest = async (
     };
 
     await Promise.all(Array.from({ length: DOWNLOAD_CONCURRENCY }, worker));
+    activeDownloads--;
     console.log(`[HTTP] /download done — completed: ${completed}, failed: ${failed}`);
     if (!destroyed) zipStream.end();
+    return;
+  }
+
+  // ── GET /download/validate ───────────────────────────────────────────────────
+  if (req.method === "GET" && url.startsWith("/download/validate")) {
+    const urlObj = new URL(url, "http://localhost");
+    const studyId = urlObj.searchParams.get("studyId");
+
+    if (!studyId) {
+      send(res, 400, { error: "studyId is required" });
+      return;
+    }
+
+    const { data: study } = await supabase
+      .from("dicom_study")
+      .select("id, patient_name, study_date, instances")
+      .eq("id", studyId)
+      .maybeSingle();
+
+    if (!study || !study.instances?.length) {
+      send(res, 404, { error: "Este estudio no tiene imágenes disponibles para descargar" });
+      return;
+    }
+
+    const instances = study.instances as { sop_instance_uid: string; storage_url: string }[];
+    send(res, 200, {
+      instanceCount: instances.length,
+      patientName: study.patient_name,
+      studyDate: study.study_date,
+    });
     return;
   }
 
@@ -335,8 +367,12 @@ const handleRequest = async (
       healthzFailures++;
       send(res, 503, { status: "unhealthy", error: msg });
       if (healthzFailures >= 3) {
-        console.error(`[HTTP] /healthz failed ${healthzFailures} times in a row — restarting process`);
-        setTimeout(() => process.exit(1), 500);
+        if (activeDownloads === 0) {
+          console.error(`[HTTP] /healthz failed ${healthzFailures} times — no active downloads, restarting process`);
+          setTimeout(() => process.exit(1), 500);
+        } else {
+          console.warn(`[HTTP] /healthz failed ${healthzFailures} times — waiting for ${activeDownloads} active download(s) to finish before restarting`);
+        }
       }
     }
     return;
