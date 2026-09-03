@@ -1,5 +1,10 @@
 app = 'cadia-dicom-scp'
 primary_region = 'gru'
+kill_signal = 'SIGTERM'
+kill_timeout = '5m'
+
+[deploy]
+  strategy = 'bluegreen'
 
 [build]
 

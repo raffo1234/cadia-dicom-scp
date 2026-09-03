@@ -13,9 +13,17 @@ import { handleCGetScp } from "./handlers/cget-scp";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
 import { startHttpServer } from "./http";
 
+// ponytail: dcmjs logs one console.warn per unrecognized private tag during
+// denaturalizeDataset (cstore.ts). Modalities like GE MRI carry dozens of private
+// tags per image, and synchronous stdout writes (non-TTY, as in a container) block
+// the event loop on every one — this was silently throttling C-STORE ingestion.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+require("dcmjs").log.setLevel("error");
+
 const { CEchoResponse, CStoreResponse, CFindResponse, CMoveResponse, CGetResponse } = responses;
 const { CEchoRequest, CStoreRequest, CFindRequest, CMoveRequest, CGetRequest } = requests;
-const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass } = constants;
+const { Status, PresentationContextResult, TransferSyntax, SopClass, StorageClass, RejectResult, RejectSource, RejectReason } =
+  constants;
 
 type AssociationType = InstanceType<typeof association.Association>;
 
@@ -55,19 +63,43 @@ function stripP10Header(buffer: Buffer): Buffer {
   return buffer.slice(datasetStart);
 }
 
+// Tracks every open DICOM connection so a graceful shutdown can wait for them
+// to finish instead of cutting an in-progress study transfer (see shutdown()).
+// NOTE: dcmjs-dimse's own Server.close() forcibly destroys every connected
+// client socket — the opposite of graceful — so shutdown must never call it.
+// Instead it flips acceptingAssociations, and associationRequested() below
+// rejects (A-ASSOCIATE-RJ, transient) any association that arrives after that.
+const activeSockets = new Set<Socket>();
+let acceptingAssociations = true;
+
 class CadiaScp extends Scp {
   private remoteAddress: string = "";
   private currentAssociation: AssociationType | undefined = undefined;
   private receivedStudyUIDs: Set<string> = new Set();
   private hospitalId: string = "";
   private pendingUpserts: Set<Promise<unknown>> = new Set();
+  private socket: Socket;
 
   constructor(socket: Socket, opts: Record<string, unknown>) {
     super(socket, opts);
     this.remoteAddress = socket.remoteAddress ?? "unknown";
+    this.socket = socket;
+    activeSockets.add(socket);
+    socket.once("close", () => activeSockets.delete(socket));
   }
 
   associationRequested(assoc: AssociationType): void {
+    if (!acceptingAssociations) {
+      console.log(`[SCP] Rejecting association from ${this.remoteAddress} — shutting down`);
+      this.sendAssociationReject(
+        RejectResult.Transient,
+        RejectSource.ServiceProviderAcse,
+        RejectReason.TemporaryCongestion,
+      );
+      this.socket.end();
+      return;
+    }
+
     this.currentAssociation = assoc;
     this.receivedStudyUIDs = new Set();
     this.hospitalId = "";
@@ -386,6 +418,40 @@ const start = async (): Promise<void> => {
 
   server.listen(SCP_PORT);
   console.log(`[SCP] Listening on port ${SCP_PORT} | AE Title: ${AE_TITLE}`);
+
+  const SHUTDOWN_MAX_WAIT_MS = 5 * 60 * 1000; // matches fly.toml kill_timeout (Fly's hard cap)
+  let shuttingDown = false;
+
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    console.log(
+      `[SCP] ${signal} received — refusing new associations, waiting for ${activeSockets.size} active connection(s) to finish...`,
+    );
+    // Do NOT call server.close() here — dcmjs-dimse's Server.close() destroys every
+    // connected client socket immediately (verified against the installed version).
+    // acceptingAssociations is enough: the TCP listener stays up, but every new
+    // association gets an immediate A-ASSOCIATE-RJ (see associationRequested above).
+    acceptingAssociations = false;
+
+    const deadline = Date.now() + SHUTDOWN_MAX_WAIT_MS;
+    while (activeSockets.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    if (activeSockets.size > 0) {
+      console.warn(
+        `[SCP] Shutdown timed out with ${activeSockets.size} connection(s) still open — exiting anyway`,
+      );
+    } else {
+      console.log("[SCP] All connections finished — shutting down cleanly");
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 };
 
 start().catch((err: unknown) => {
