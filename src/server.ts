@@ -11,7 +11,7 @@ import { handleCFind } from "./handlers/cfind";
 import { handleCMove } from "./handlers/cmove";
 import { handleCGetScp } from "./handlers/cget-scp";
 import { completeStudiesForAssociation, startCompletionWatchdog } from "./lib/studyCompletion";
-import { startHttpServer } from "./http";
+import { startHttpServer, getActiveDownloadsCount } from "./http";
 
 // ponytail: dcmjs logs one console.warn per unrecognized private tag during
 // denaturalizeDataset (cstore.ts). Modalities like GE MRI carry dozens of private
@@ -427,7 +427,7 @@ const start = async (): Promise<void> => {
     shuttingDown = true;
 
     console.log(
-      `[SCP] ${signal} received — refusing new associations, waiting for ${activeSockets.size} active connection(s) to finish...`,
+      `[SCP] ${signal} received — refusing new associations, waiting for ${activeSockets.size} active connection(s) and ${getActiveDownloadsCount()} active download(s) to finish...`,
     );
     // Do NOT call server.close() here — dcmjs-dimse's Server.close() destroys every
     // connected client socket immediately (verified against the installed version).
@@ -436,13 +436,16 @@ const start = async (): Promise<void> => {
     acceptingAssociations = false;
 
     const deadline = Date.now() + SHUTDOWN_MAX_WAIT_MS;
-    while (activeSockets.size > 0 && Date.now() < deadline) {
+    while (
+      (activeSockets.size > 0 || getActiveDownloadsCount() > 0) &&
+      Date.now() < deadline
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    if (activeSockets.size > 0) {
+    if (activeSockets.size > 0 || getActiveDownloadsCount() > 0) {
       console.warn(
-        `[SCP] Shutdown timed out with ${activeSockets.size} connection(s) still open — exiting anyway`,
+        `[SCP] Shutdown timed out with ${activeSockets.size} connection(s) and ${getActiveDownloadsCount()} download(s) still open — exiting anyway`,
       );
     } else {
       console.log("[SCP] All connections finished — shutting down cleanly");

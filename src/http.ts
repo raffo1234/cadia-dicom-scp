@@ -188,6 +188,10 @@ const getNumber = (val: unknown): number | undefined =>
 let healthzFailures = 0;
 let activeDownloads = 0;
 
+// Read by server.ts's graceful shutdown so a deploy waits for in-flight
+// ZIP downloads too, not just DICOM associations.
+export const getActiveDownloadsCount = (): number => activeDownloads;
+
 // ─── Request Handler ──────────────────────────────────────────────────────────
 
 const handleRequest = async (
